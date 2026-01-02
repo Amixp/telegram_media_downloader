@@ -371,7 +371,8 @@ class MessageHistory:
         if not messages:
             return
 
-        chat_title = messages[0].get("chat_title", f"Чат {chat_id}")
+        # Использовать 'or' вместо default, чтобы обработать None значения
+        chat_title = messages[0].get("chat_title") or f"Чат {chat_id}"
         html_file = os.path.join(self.history_path, f"chat_{chat_id}.html")
 
         html_content = self._get_html_template(chat_title, messages)
