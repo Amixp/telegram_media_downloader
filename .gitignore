@@ -62,4 +62,10 @@ video_note/
 
 # Config file
 config.yaml
+
+# API credentials (NEVER commit these!)
+api-telegram.md
+*.session
+
+# Reserved directories
 Книги для программистов (reserved)/utils/__init__.py
