@@ -1,5 +1,4 @@
-
-<h1 align="center">Telegram Media Downloader</h1>
+# Telegram Media Downloader
 
 <p align="center">
 <a href="https://github.com/Dineshkarthik/telegram_media_downloader/actions"><img alt="Unittest" src="https://github.com/Dineshkarthik/telegram_media_downloader/workflows/Unittest/badge.svg"></a>
@@ -8,203 +7,330 @@
 <a href="https://github.com/python/black"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
 </p>
 
-<h3 align="center">
-  <a href="https://github.com/Dineshkarthik/telegram_media_downloader/discussions/categories/ideas">Feature request</a>
-  <span> · </span>
-  <a href="https://github.com/Dineshkarthik/telegram_media_downloader/issues">Report a bug</a>
-  <span> · </span>
-  Support: <a href="https://github.com/Dineshkarthik/telegram_media_downloader/discussions">Discussions</a>
-  <span> & </span>
-  <a href="https://t.me/tgmdnews">Telegram Community</a>
-</h3>
+## Описание
 
-### Overview:
-Download all media files and history from a conversation or a channel that you are a part of from telegram.
-A meta of last read/downloaded message is stored in the config file so that in such a way it won't download the same media file again.
+Telegram Media Downloader — инструмент для загрузки всех медиафайлов и истории сообщений из чатов и каналов Telegram, участником которых вы являетесь. Метаданные последнего прочитанного/загруженного сообщения сохраняются в файле конфигурации, чтобы не загружать одни и те же файлы повторно.
 
-### Support:
-| Category             | Support                                          |
-| -------------------- | ------------------------------------------------ |
-| Language             | `Python 3.7 ` and above                          |
-| Download media types | audio, document, photo, video, video_note, voice |
+## Возможности
 
-### ToDo:
-- Add support for multiple channels/chats.
+- ✅ Загрузка всех типов медиа (аудио, документы, фото, видео, голосовые сообщения, видеосообщения)
+- ✅ Загрузка истории текстовых сообщений (JSON или текстовый формат)
+- ✅ Поддержка нескольких чатов/каналов одновременно
+- ✅ Интерактивный выбор чатов с мультивыбором
+- ✅ Сохранение состояния загрузки для каждого чата отдельно
+- ✅ Параллельные загрузки с настраиваемым количеством потоков
+- ✅ Фильтрация по отправителю, дате, размеру файла
+- ✅ Пропуск дубликатов файлов
+- ✅ Кастомная директория для загрузок
+- ✅ Логирование в файл с ротацией
+- ✅ Прогресс-бар для отслеживания загрузки
+- ✅ Полная русификация интерфейса
+- ✅ Поддержка прокси (SOCKS4, SOCKS5, HTTP)
 
-## ⚠️ Version 3.0.0 - Breaking Changes
+## Требования
 
-**This version (3.0.0) contains breaking changes** due to migration from **Pyrogram** to **Telethon**.
+| Категория  | Требования                                       |
+| ---------- | ------------------------------------------------ |
+| Python     | `Python 3.8` и выше                              |
+| Типы медиа | audio, document, photo, video, video_note, voice |
 
-### What's Changed:
-- **Backend Migration**: Complete migration from Pyrogram to Telethon library
-- **API Changes**: Some configuration options may have changed
-- **Dependencies**: Updated to use Telethon-specific dependencies
-- **Python Requirement**: Now requires Python 3.8 or higher (previously 3.7+)
+## Установка
 
-### Migration Guide:
-If you're upgrading from a previous version:
-1. **Backup your `config.yaml`** and downloaded media
-2. **Use `make install`** to ensure all dependencies are properly installed
-3. **Review your configuration** as some options may have changed
-4. **Test with a small channel first** to verify everything works
+### Для Linux/macOS (с поддержкой `make`):
 
-### Installation
-
-> **⚠️ Important**: For version 3.0.0, we strongly recommend using `make install` to ensure all dependencies are properly installed with correct Python version compatibility.
-
-#### For *nix OS distributions with `make` availability (Recommended):
 ```sh
 git clone https://github.com/Dineshkarthik/telegram_media_downloader.git
 cd telegram_media_downloader
 make install
 ```
 
-#### For Windows or systems without `make`:
+### Для Windows или систем без `make`:
+
 ```sh
 git clone https://github.com/Dineshkarthik/telegram_media_downloader.git
 cd telegram_media_downloader
 pip3 install -r requirements.txt
 ```
 
-> **Note**: The `make install` command automatically detects your Python version and installs the appropriate dependencies for optimal compatibility.
-
-### Development Installation
-
-For contributors and developers who need additional development tools:
+### Для разработчиков:
 
 ```sh
 git clone https://github.com/Dineshkarthik/telegram_media_downloader.git
 cd telegram_media_downloader
-make dev_install  # Installs both runtime and development dependencies
+make dev_install
 ```
 
-> **Note**: `make dev_install` also automatically detects your Python version and installs version-specific development dependencies.
+## Конфигурация
 
-## Configuration
+Все настройки передаются через файл `config.yaml`.
 
-All the configurations are passed to the Telegram Media Downloader via `config.yaml` file.
+### Быстрый старт
 
-### Setup Configuration
-
-1. Copy `config.yaml.example` to `config.yaml`:
+1. Скопируйте пример конфигурации:
    ```sh
    cp config.yaml.example config.yaml
    ```
-2. Update the values in `config.yaml` with your specific details (API keys, chat ID, etc.).
 
-> **Note**: `config.yaml` is ignored by git to prevent accidental commits of sensitive information. Always use `config.yaml.example` as the template.
+2. Получите API ключи Telegram:
+   - Перейдите на [https://my.telegram.org/apps](https://my.telegram.org/apps)
+   - Войдите в свой аккаунт Telegram
+   - Заполните форму для регистрации нового приложения
+   - Скопируйте `api_id` и `api_hash`
 
-**Getting your API Keys:**
-The very first step requires you to obtain a valid Telegram API key (API id/hash pair):
-1.  Visit  [https://my.telegram.org/apps](https://my.telegram.org/apps)  and log in with your Telegram Account.
-2.  Fill out the form to register a new Telegram application.
-3.  Done! The API key consists of two parts:  **api_id**  and  **api_hash**.
+3. Получите ID чата:
+   - **Через веб-версию Telegram**: Откройте чат и посмотрите URL
+   - **Через бота**: Используйте [@username_to_id_bot](https://t.me/username_to_id_bot)
 
+4. Отредактируйте `config.yaml` с вашими данными
 
-**Getting chat id:**
+### Пример конфигурации
 
-**1. Using web telegram:**
-1. Open https://web.telegram.org/?legacy=1#/im
-2. Now go to the chat/channel and you will see the URL as something like
-	- `https://web.telegram.org/?legacy=1#/im?p=u853521067_2449618633394` here `853521067` is the chat id.
-	- `https://web.telegram.org/?legacy=1#/im?p=@somename` here `somename` is the chat id.
-	- `https://web.telegram.org/?legacy=1#/im?p=s1301254321_6925449697188775560` here take `1301254321` and add `-100` to the start of the id => `-1001301254321`.
-	- `https://web.telegram.org/?legacy=1#/im?p=c1301254321_6925449697188775560` here take `1301254321` and add `-100` to the start of the id => `-1001301254321`.
+См. файл `config.yaml.example` для полного примера со всеми опциями.
 
+#### Основные параметры:
 
-**2. Using bot:**
-1. Use [@username_to_id_bot](https://t.me/username_to_id_bot) to get the chat_id of
-    - almost any telegram user: send username to the bot or just forward their message to the bot
-    - any chat: send chat username or copy and send its joinchat link to the bot
-    - public or private channel: same as chats, just copy and send to the bot
-    - id of any telegram bot
-
-
-### config.yaml
 ```yaml
-api_hash: your_api_hash
 api_id: your_api_id
-chat_id: telegram_chat_id
-last_read_message_id: 0
-ids_to_retry: []
-media_types:
-- audio
-- document
-- photo
-- video
-- voice
-- video_note
-file_formats:
-  audio:
-  - all
-  document:
-  - all
-  video:
-  - all
+api_hash: your_api_hash
+language: ru  # ru или en
 
-# Optional filters
-download_directory: null  # Custom directory path for downloads (absolute or relative path)
-start_date: null  # Filter messages after this date (ISO format, e.g., '2023-01-01' or '2023-01-01T00:00:00')
-end_date: null    # Filter messages before this date (ISO format)
-max_messages: null  # Limit the number of media items to download (integer)
+# Типы медиа для загрузки
+media_types:
+  - all  # или конкретные типы: audio, document, photo, video, voice, video_note
+
+# Настройки загрузки
+download_settings:
+  max_parallel_downloads: 5  # Количество одновременных загрузок
+  pagination_limit: 100       # Размер пакета сообщений
+  base_directory: ""          # Базовая директория (пусто = директория скрипта)
+  skip_duplicates: true       # Пропускать дубликаты
+  download_message_history: false  # Загружать историю сообщений
+  history_format: json        # Формат истории (json или txt)
+  history_directory: history  # Директория для истории
 ```
 
-- api_hash  - The api_hash you got from telegram apps
-- api_id - The api_id you got from telegram apps
-- chat_id -  The id of the chat/channel you want to download media. Which you get from the above-mentioned steps.
-- last_read_message_id - If it is the first time you are going to read the channel let it be `0` or if you have already used this script to download media it will have some numbers which are auto-updated after the scripts successful execution. Don't change it.
-- ids_to_retry - `Leave it as it is.` This is used by the downloader script to keep track of all skipped downloads so that it can be downloaded during the next execution of the script.
-- media_types - Type of media to download, you can update which type of media you want to download it can be one or any of the available types.
-- file_formats - File types to download for supported media types which are `audio`, `document` and `video`. Default format is `all`, downloads all files.
-- download_directory - Optional: Custom directory path where media files will be downloaded. Can be absolute or relative path. If `null`, uses default directory structure. The directory will be created if it doesn't exist.
-- start_date - Optional: Filter messages to download only those sent after this date (ISO format, e.g., '2023-01-01'). Leave as `null` to disable.
-- end_date - Optional: Filter messages to download only those sent before this date (ISO format). Leave as `null` to disable.
-- max_messages - Optional: Limit the number of media items to download (integer). Leave as `null` for unlimited.
+#### Фильтры:
 
-## Execution
+```yaml
+# Фильтр по отправителю
+sender_filter:
+  enabled: false
+  user_ids: [123456789]
+  usernames: ["@username"]
+
+# Фильтры по дате
+start_date: "2024-01-01"  # Начальная дата
+end_date: "2024-12-31"    # Конечная дата
+max_messages: 1000        # Максимум сообщений
+```
+
+#### Логирование:
+
+```yaml
+logging:
+  file_logging:
+    enabled: false
+    file_path: downloads.log
+    level: INFO
+    max_bytes: 10485760  # 10 MB
+    backup_count: 5
+```
+
+#### Прокси:
+
+```yaml
+proxy:
+  scheme: socks5  # socks4, socks5, http
+  hostname: 11.22.33.44
+  port: 1234
+  username: your_username  # опционально
+  password: your_password  # опционально
+```
+
+#### Несколько чатов:
+
+```yaml
+chats:
+  - chat_id: 123456789
+    title: "Название чата"
+    last_read_message_id: 0
+    ids_to_retry: []
+    enabled: true
+  - chat_id: 987654321
+    title: "Другой чат"
+    last_read_message_id: 0
+    ids_to_retry: []
+    enabled: true
+```
+
+## Использование
+
+### Базовое использование:
+
 ```sh
 python3 media_downloader.py
 ```
 
-| Media type | Download directory         |
-| ---------- | -------------------------- |
-| audio      | path/to/project/audio      |
-| document   | path/to/project/document   |
-| photo      | path/to/project/photo      |
-| video      | path/to/project/video      |
-| voice      | path/to/project/voice      |
-| voice_note | path/to/project/voice_note |
+При первом запуске будет предложен интерактивный выбор чатов. Выбранные чаты сохраняются в конфигурации для последующих запусков.
 
-#### Custom Download Directory
+### Структура загруженных файлов:
 
-You can specify a custom download directory by setting the `download_directory` option in your `config.yaml`. This allows you to organize all downloads in a single custom location while maintaining the media type subdirectories.
+| Тип медиа  | Директория загрузки         |
+| ---------- | --------------------------- |
+| audio      | `base_directory/audio`      |
+| document   | `base_directory/document`   |
+| photo      | `base_directory/photo`      |
+| video      | `base_directory/video`      |
+| voice      | `base_directory/voice`      |
+| video_note | `base_directory/video_note` |
+| history    | `base_directory/history`    |
 
-**Examples:**
-- `download_directory: "/home/user/downloads/telegram"` (absolute path)
-- `download_directory: "downloads/telegram"` (relative path)
-- `download_directory: null` (use default directory structure)
+### Интерактивный выбор чатов
 
-If the specified directory doesn't exist, it will be automatically created. The media type subdirectories (audio/, photo/, etc.) will still be created within your custom directory.
+При запуске программы:
 
-## Proxy
-`socks4, socks5, http` proxies are supported in this project currently. To use it, add the following to the bottom of your `config.yaml` file
+1. Если в конфиге есть сохраненные чаты, будет предложено использовать их или выбрать новые
+2. Выбор фильтра для удобной работы с большим списком чатов:
+   - **Все чаты** — показать весь список
+   - **Только группы и каналы** — исключить личные чаты (рекомендуется по умолчанию)
+   - **Только каналы** — только публичные каналы
+   - **Только группы** — только групповые чаты
+   - **Только пользователи** — только личные чаты
+   - **Поиск по названию** — найти чаты по части названия
+3. Отобразится таблица с отфильтрованными чатами (по 50 на страницу)
+4. Доступные команды:
+   - Номера через запятую (например: `1,3,5`) — выбрать конкретные чаты
+   - `all` — выбрать все отфильтрованные чаты
+   - `next` или `n` — следующая страница
+   - `prev` или `p` — предыдущая страница
+   - `page N` — перейти на страницу N
+   - `search` — новый поиск по названию
+   - `filter` — изменить фильтр
+   - `done` — завершить выбор
+5. Выбранные чаты сохраняются в конфигурации
+
+**Пример работы с большим списком:**
+```
+Выберите тип чатов: 2 (только группы и каналы)
+Отфильтровано: 156 чатов (группы + каналы)
+
+Показано 1-50 из 156
+[таблица с чатами]
+
+Ваш выбор: 1,5,10
+✓ Выбран: Канал 1
+✓ Выбран: Канал 2
+✓ Выбран: Канал 3
+
+Ваш выбор: next
+[следующая страница]
+
+Ваш выбор: search
+Поисковый запрос: программ
+Найдено: 12 чатов
+
+Ваш выбор: all
+✓ Выбрано всех: 12 чатов
+```
+
+### Загрузка истории сообщений
+
+Для включения загрузки истории сообщений:
 
 ```yaml
-proxy:
-  scheme: socks5
-  hostname: 11.22.33.44
-  port: 1234
-  username: your_username
-  password: your_password
+download_settings:
+  download_message_history: true
+  history_format: json  # или txt
+  history_directory: history
 ```
-If your proxy doesn’t require authorization you can omit username and password. Then the proxy will automatically be enabled.
 
-## Contributing
-### Contributing Guidelines
-Read through our [contributing guidelines](https://github.com/Dineshkarthik/telegram_media_downloader/blob/master/CONTRIBUTING.md) to learn about our submission process, coding rules and more.
+История сохраняется в формате:
+- **JSON**: `chat_{chat_id}.jsonl` (каждая строка — JSON объект)
+- **TXT**: `chat_{chat_id}.txt` (текстовый формат для чтения)
 
-### Want to Help?
-Want to file a bug, contribute some code, or improve documentation? Excellent! Read up on our guidelines for [contributing](https://github.com/Dineshkarthik/telegram_media_downloader/blob/master/CONTRIBUTING.md).
+## Новые возможности
 
-### Code of Conduct
-Help us keep Telegram Media Downloader open and inclusive. Please read and follow our [Code of Conduct](https://github.com/Dineshkarthik/telegram_media_downloader/blob/master/CODE_OF_CONDUCT.md).
+### Параллельные загрузки
+
+Настройте количество одновременных загрузок:
+
+```yaml
+download_settings:
+  max_parallel_downloads: 5  # None = без ограничений
+```
+
+### Фильтр по отправителю
+
+Загружайте медиа только от определенных пользователей:
+
+```yaml
+sender_filter:
+  enabled: true
+  user_ids: [123456789, 987654321]
+  usernames: ["@username1", "@username2"]
+```
+
+### Пропуск дубликатов
+
+Автоматическое обнаружение и удаление дубликатов:
+
+```yaml
+download_settings:
+  skip_duplicates: true
+```
+
+### Кастомная директория
+
+Укажите свою директорию для всех загрузок:
+
+```yaml
+download_settings:
+  base_directory: "/path/to/downloads"
+```
+
+### Логирование в файл
+
+Сохраняйте логи в файл с автоматической ротацией:
+
+```yaml
+logging:
+  file_logging:
+    enabled: true
+    file_path: downloads.log
+    level: INFO
+    max_bytes: 10485760  # 10 MB
+    backup_count: 5
+```
+
+## Состояние загрузки
+
+Программа автоматически сохраняет состояние загрузки для каждого чата:
+
+- `last_read_message_id` — ID последнего обработанного сообщения
+- `ids_to_retry` — список ID сообщений, которые не удалось загрузить
+
+При следующем запуске загрузка продолжится с места остановки.
+
+## Вклад в проект
+
+### Руководство по вкладу
+
+Прочитайте [руководство по вкладу](CONTRIBUTING.md) для изучения процесса подачи изменений, правил кодирования и многого другого.
+
+### Хотите помочь?
+
+Хотите сообщить об ошибке, внести код или улучшить документацию? Отлично! Прочитайте наши [руководящие принципы](CONTRIBUTING.md).
+
+### Кодекс поведения
+
+Помогите нам сохранить Telegram Media Downloader открытым и инклюзивным. Пожалуйста, прочитайте и следуйте нашему [Кодексу поведения](CODE_OF_CONDUCT.md).
+
+## Лицензия
+
+MIT License - см. файл [LICENSE](LICENSE) для деталей.
+
+## Поддержка
+
+- [Обсуждения](https://github.com/Dineshkarthik/telegram_media_downloader/discussions)
+- [Сообщить об ошибке](https://github.com/Dineshkarthik/telegram_media_downloader/issues)
+- [Telegram Community](https://t.me/tgmdnews)
