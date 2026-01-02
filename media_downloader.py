@@ -490,7 +490,7 @@ class DownloadManager:
         # Фильтровать downloaded_ids и failed_ids только для текущего чата
         chat_downloaded_ids = [msg_id for (cid, msg_id) in self.downloaded_ids if cid == chat_id]
         chat_failed_ids = [msg_id for (cid, msg_id) in self.failed_ids if cid == chat_id]
-        
+
         # Обновить ids_to_retry: убрать успешно загруженные, добавить неудачные
         ids_to_retry = list(set(current_ids_to_retry) - set(chat_downloaded_ids)) + chat_failed_ids
 
@@ -659,7 +659,7 @@ class DownloadManager:
         keys_to_remove = [key for key in self.downloaded_files.keys() if key[0] == chat_id]
         for key in keys_to_remove:
             del self.downloaded_files[key]
-        
+
         # Очистить downloaded_ids и failed_ids для текущего чата
         self.downloaded_ids = [(cid, msg_id) for (cid, msg_id) in self.downloaded_ids if cid != chat_id]
         self.failed_ids = [(cid, msg_id) for (cid, msg_id) in self.failed_ids if cid != chat_id]
