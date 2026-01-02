@@ -847,7 +847,12 @@ class MessageHistory:
             # Превью для видео
             elif media_type in ["video", "video_note"]:
                 duration = msg.get("duration", 0)
-                duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
+                if duration:
+                    # Преобразовать в int, если это float
+                    duration = int(duration)
+                    duration_str = f"{duration // 60}:{duration % 60:02d}"
+                else:
+                    duration_str = ""
                 media_html = f'''
                 <div class="media-preview video-preview">
                     <video controls preload="metadata" 
