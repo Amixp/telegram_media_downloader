@@ -1,8 +1,11 @@
 """Модуль для фильтрации сообщений."""
+import logging
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from telethon.tl.types import Message
+
+logger = logging.getLogger(__name__)
 
 
 class MediaFilter:
@@ -22,6 +25,14 @@ class MediaFilter:
         self.enabled = self.sender_filter.get("enabled", False)
         self.user_ids = self.sender_filter.get("user_ids", [])
         self.usernames = self.sender_filter.get("usernames", [])
+        
+        # Предупреждение если указаны usernames (пока не реализовано)
+        if self.enabled and self.usernames and not self.user_ids:
+            logger.warning(
+                "⚠️ Фильтр по usernames пока не реализован! "
+                "Используйте user_ids для фильтрации по отправителю. "
+                "Фильтр по usernames будет проигнорирован."
+            )
         
         # Преобразование дат из конфига в datetime объекты
         self.start_date = self._parse_date(config.get("start_date"))
@@ -56,13 +67,15 @@ class MediaFilter:
         if self.user_ids and sender in self.user_ids:
             return True
 
-        # Проверка по username (требует дополнительной информации о пользователе)
-        # Это будет реализовано позже, когда будет доступ к информации о пользователе
-        if self.usernames:
-            # Пока возвращаем True, если есть user_ids и sender в списке
-            # Или если нет user_ids, но есть usernames (требует дополнительной логики)
-            pass
+        # ВРЕМЕННОЕ РЕШЕНИЕ: Если указаны только usernames, не фильтровать
+        # Фильтр по username пока не реализован, требует доступа к информации о пользователе
+        # TODO: Реализовать проверку username через message.sender или client.get_entity()
+        if self.usernames and not self.user_ids:
+            # Предупреждение уже показано в __init__
+            # Возвращаем True, чтобы не блокировать все сообщения
+            return True
 
+        # Если есть user_ids но sender не в списке, и usernames игнорируются
         return False
 
     def _parse_date(self, date_val: Any) -> Optional[datetime]:
