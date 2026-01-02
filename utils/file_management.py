@@ -1,9 +1,14 @@
-"""Utility functions to handle downloaded files."""
+"""Утилиты для обработки загруженных файлов."""
 
 import glob
 import os
 import pathlib
 from hashlib import md5
+from typing import Dict, Optional
+
+
+# Кеш для хешей файлов
+_hash_cache: Dict[str, str] = {}
 
 
 def get_next_name(file_path: str) -> str:
@@ -41,39 +46,80 @@ def get_next_name(file_path: str) -> str:
     )
 
 
-def manage_duplicate_file(file_path: str):
+def _get_file_hash(file_path: str) -> str:
     """
-    Check if a file is duplicate.
-
-    Compare the md5 of files with copy name pattern
-    and remove if the md5 hash is same.
+    Получить MD5 хеш файла с использованием кеша.
 
     Parameters
     ----------
     file_path: str
-        Absolute path of the file for which duplicates needs to
-        be managed.
+        Путь к файлу.
 
     Returns
     -------
     str
-        Absolute path of the duplicate managed file.
+        MD5 хеш файла.
     """
+    if file_path in _hash_cache:
+        return _hash_cache[file_path]
+
     # pylint: disable = R1732
+    with open(file_path, "rb") as f:
+        file_hash = md5(f.read()).hexdigest()
+    _hash_cache[file_path] = file_hash
+    return file_hash
+
+
+def manage_duplicate_file(
+    file_path: str, enabled: bool = True
+) -> str:
+    """
+    Проверить, является ли файл дубликатом.
+
+    Сравнивает MD5 хеш файлов с паттерном имени копии
+    и удаляет, если MD5 хеш совпадает.
+
+    Parameters
+    ----------
+    file_path: str
+        Абсолютный путь к файлу, для которого нужно управлять дубликатами.
+    enabled: bool
+        Включена ли проверка дубликатов. По умолчанию True.
+
+    Returns
+    -------
+    str
+        Абсолютный путь к файлу после обработки дубликатов.
+    """
+    if not enabled:
+        return file_path
+
+    if not os.path.exists(file_path):
+        return file_path
+
     posix_path = pathlib.Path(file_path)
     file_base_name: str = "".join(posix_path.stem.split("-copy")[0])
     name_pattern: str = f"{posix_path.parent}/{file_base_name}*"
-    # Reason for using `str.translate()`
+    # Причина использования `str.translate()`
     # https://stackoverflow.com/q/22055500/6730439
     old_files: list = glob.glob(
         name_pattern.translate({ord("["): "[[]", ord("]"): "[]]"})
     )
     if file_path in old_files:
         old_files.remove(file_path)
-    current_file_md5: str = md5(open(file_path, "rb").read()).hexdigest()
+
+    current_file_md5: str = _get_file_hash(file_path)
     for old_file_path in old_files:
-        old_file_md5: str = md5(open(old_file_path, "rb").read()).hexdigest()
+        if not os.path.exists(old_file_path):
+            continue
+        old_file_md5: str = _get_file_hash(old_file_path)
         if current_file_md5 == old_file_md5:
             os.remove(file_path)
             return old_file_path
     return file_path
+
+
+def clear_hash_cache() -> None:
+    """Очистить кеш хешей файлов."""
+    global _hash_cache
+    _hash_cache.clear()
