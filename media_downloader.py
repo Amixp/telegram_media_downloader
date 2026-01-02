@@ -56,7 +56,7 @@ class DownloadManager:
         self.config = config_manager.config
         self.failed_ids: List[int] = []
         self.downloaded_ids: List[int] = []
-        self.downloaded_files: Dict[int, str] = {}  # {message_id: file_path}
+        self.downloaded_files: Dict[Tuple[int, int], str] = {}  # {(chat_id, message_id): file_path}
         self.i18n = get_i18n(self.config.get("language", "ru"))
         self.media_filter = MediaFilter(self.config)
 
@@ -347,8 +347,10 @@ class DownloadManager:
                     if download_path:
                         logger.info(self.i18n.t("downloaded", path=download_path))
                         logger.debug("Успешно загружено сообщение %s", message.id)
-                        # Сохранить путь к файлу
-                        self.downloaded_files[message.id] = download_path
+                        # Сохранить путь к файлу с ключом (chat_id, message_id)
+                        # чтобы избежать коллизий между чатами
+                        chat_id = message.chat.id if message.chat else 0
+                        self.downloaded_files[(chat_id, message.id)] = download_path
                     self.downloaded_ids.append(message.id)
                 break
             except FileReferenceExpiredError:
@@ -442,9 +444,15 @@ class DownloadManager:
         if self.history_manager and messages:
             chat_id = messages[0].chat.id if messages else 0
             chat_title = getattr(messages[0].chat, "title", None)
+            # Создать словарь только для текущего чата
+            chat_files = {
+                msg_id: path 
+                for (cid, msg_id), path in self.downloaded_files.items() 
+                if cid == chat_id
+            }
             # Сохранить ВСЕ сообщения с информацией о скачанных файлах
             self.history_manager.save_batch(
-                messages, chat_id, chat_title, self.downloaded_files
+                messages, chat_id, chat_title, chat_files
             )
 
         last_message_id: int = max(message_ids)
@@ -625,6 +633,11 @@ class DownloadManager:
 
         self.config["last_read_message_id"] = last_read_message_id
         self.update_config(chat_id)
+        
+        # Очистить downloaded_files для текущего чата для экономии памяти
+        keys_to_remove = [key for key in self.downloaded_files.keys() if key[0] == chat_id]
+        for key in keys_to_remove:
+            del self.downloaded_files[key]
 
 
 async def main_async():
