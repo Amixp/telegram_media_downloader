@@ -406,194 +406,398 @@ class MessageHistory:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{html.escape(chat_title)}</title>
     <style>
+        :root {{
+            --bg-color: #0f0f0f;
+            --chat-bg: #212121;
+            --message-bg: #2b2b2b;
+            --text-color: #e4e4e4;
+            --text-secondary: #8e8e93;
+            --accent-color: #8774e1;
+            --header-bg: #17212b;
+            --border-color: #2f2f2f;
+        }}
+        
+        [data-theme="light"] {{
+            --bg-color: #f4f4f5;
+            --chat-bg: #ffffff;
+            --message-bg: #ffffff;
+            --text-color: #000000;
+            --text-secondary: #707579;
+            --accent-color: #3390ec;
+            --header-bg: #ffffff;
+            --border-color: #e4e4e5;
+        }}
+        
         * {{
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }}
+        
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
+            background: var(--bg-color);
+            color: var(--text-color);
             min-height: 100vh;
         }}
+        
         .container {{
-            max-width: 1000px;
+            max-width: 900px;
             margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            overflow: hidden;
+            background: var(--chat-bg);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
         }}
+        
         .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }}
-        .header h1 {{
-            font-size: 28px;
-            margin-bottom: 10px;
-        }}
-        .header .stats {{
-            font-size: 14px;
-            opacity: 0.9;
-        }}
-        .messages {{
-            padding: 20px;
-            max-height: 80vh;
-            overflow-y: auto;
-        }}
-        .message {{
-            background: #f8f9fa;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-            border-left: 4px solid #667eea;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }}
-        .message:hover {{
-            transform: translateX(4px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }}
-        .message-header {{
+            background: var(--header-bg);
+            border-bottom: 1px solid var(--border-color);
+            padding: 12px 20px;
             display: flex;
+            align-items: center;
             justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }}
+        
+        .header-left {{
+            display: flex;
             align-items: center;
-            margin-bottom: 12px;
-            font-size: 13px;
-            color: #6c757d;
+            gap: 12px;
         }}
-        .message-id {{
-            font-weight: bold;
-            color: #667eea;
-        }}
-        .message-date {{
-            font-style: italic;
-        }}
-        .message-text {{
-            color: #212529;
-            line-height: 1.6;
-            margin-bottom: 12px;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }}
-        .message-text.empty {{
-            color: #adb5bd;
-            font-style: italic;
-        }}
-        .media-info {{
-            background: #e3f2fd;
-            border-radius: 8px;
-            padding: 12px;
-            margin-top: 12px;
-            border-left: 3px solid #2196f3;
-        }}
-        .media-badge {{
-            display: inline-block;
-            background: #2196f3;
-            color: white;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: bold;
-            margin-bottom: 8px;
-        }}
-        .file-link {{
-            display: inline-flex;
-            align-items: center;
-            background: #4caf50;
-            color: white;
-            padding: 8px 16px;
-            border-radius: 6px;
+        
+        .back-btn {{
+            color: var(--text-color);
             text-decoration: none;
-            font-size: 14px;
-            margin-top: 8px;
-            transition: background 0.2s;
+            font-size: 24px;
+            transition: opacity 0.2s;
         }}
-        .file-link:hover {{
-            background: #45a049;
+        
+        .back-btn:hover {{
+            opacity: 0.7;
         }}
-        .file-link::before {{
-            content: "📎 ";
-            margin-right: 6px;
-        }}
-        .meta-info {{
+        
+        .chat-info {{
             display: flex;
-            gap: 16px;
-            margin-top: 12px;
-            font-size: 12px;
-            color: #6c757d;
+            flex-direction: column;
         }}
-        .meta-item {{
-            display: flex;
-            align-items: center;
-            gap: 4px;
+        
+        .chat-title {{
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--text-color);
         }}
+        
+        .chat-subtitle {{
+            font-size: 13px;
+            color: var(--text-secondary);
+        }}
+        
+        .theme-toggle {{
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 8px;
+            transition: transform 0.2s;
+        }}
+        
+        .theme-toggle:hover {{
+            transform: scale(1.1);
+        }}
+        
         .search-box {{
-            padding: 20px;
-            background: #f8f9fa;
-            border-bottom: 1px solid #dee2e6;
+            padding: 12px 20px;
+            background: var(--chat-bg);
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 60px;
+            z-index: 99;
+            backdrop-filter: blur(10px);
         }}
+        
         .search-box input {{
             width: 100%;
-            padding: 12px 20px;
-            border: 2px solid #dee2e6;
-            border-radius: 8px;
-            font-size: 16px;
+            padding: 10px 16px;
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            font-size: 14px;
+            background: var(--message-bg);
+            color: var(--text-color);
             transition: border-color 0.2s;
         }}
+        
         .search-box input:focus {{
             outline: none;
-            border-color: #667eea;
+            border-color: var(--accent-color);
         }}
-        .back-link {{
-            display: inline-block;
-            margin: 20px;
-            padding: 10px 20px;
-            background: #667eea;
-            color: white;
-            text-decoration: none;
+        
+        .messages {{
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+        
+        .message-bubble {{
+            max-width: 70%;
+            background: var(--message-bg);
+            border-radius: 12px;
+            padding: 8px 12px;
+            position: relative;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            animation: fadeIn 0.2s ease-in;
+            align-self: flex-start;
+        }}
+        
+        @keyframes fadeIn {{
+            from {{ opacity: 0; transform: translateY(10px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        
+        .message-reply {{
+            background: var(--accent-color);
+            background: linear-gradient(90deg, var(--accent-color) 3px, transparent 3px);
+            padding: 6px 10px;
+            padding-left: 14px;
             border-radius: 6px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }}
+        
+        .message-text {{
+            font-size: 15px;
+            line-height: 1.5;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            margin: 4px 0;
+        }}
+        
+        .message-link {{
+            color: var(--accent-color);
+            text-decoration: none;
+        }}
+        
+        .message-link:hover {{
+            text-decoration: underline;
+        }}
+        
+        .media-preview {{
+            margin: 4px 0;
+            border-radius: 8px;
+            overflow: hidden;
+            max-width: 100%;
+        }}
+        
+        .photo-preview img {{
+            display: block;
+            max-width: 100%;
+            max-height: 500px;
+            width: auto;
+            height: auto;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }}
+        
+        .photo-preview img:hover {{
+            transform: scale(1.02);
+        }}
+        
+        .video-preview {{
+            position: relative;
+        }}
+        
+        .video-preview video {{
+            display: block;
+            max-width: 100%;
+            max-height: 500px;
+            width: auto;
+            border-radius: 8px;
+        }}
+        
+        .video-duration {{
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }}
+        
+        .media-file {{
+            background: var(--message-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin: 4px 0;
+        }}
+        
+        .file-download {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            text-decoration: none;
+            color: var(--text-color);
             transition: background 0.2s;
         }}
-        .back-link:hover {{
-            background: #5568d3;
+        
+        .file-download:hover {{
+            background: var(--border-color);
+        }}
+        
+        .file-icon {{
+            font-size: 32px;
+            flex-shrink: 0;
+        }}
+        
+        .file-info {{
+            flex: 1;
+            min-width: 0;
+        }}
+        
+        .file-name {{
+            font-size: 14px;
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        
+        .file-size {{
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }}
+        
+        .download-icon {{
+            font-size: 20px;
+            flex-shrink: 0;
+        }}
+        
+        .not-downloaded {{
+            opacity: 0.6;
+        }}
+        
+        .media-error {{
+            padding: 20px;
+            text-align: center;
+            background: var(--border-color);
+            border-radius: 8px;
+            color: var(--text-secondary);
+        }}
+        
+        .message-footer {{
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 6px;
+            margin-top: 4px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }}
+        
+        .message-time {{
+            font-size: 11px;
+        }}
+        
+        .message-meta {{
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }}
+        
+        .meta-views, .meta-forwards {{
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }}
+        
+        .meta-edited {{
+            font-style: italic;
+            font-size: 11px;
+        }}
+        
+        .empty-state {{
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-secondary);
+        }}
+        
+        @media (max-width: 768px) {{
+            .message-bubble {{
+                max-width: 85%;
+            }}
         }}
     </style>
 </head>
-<body>
-    <a href="index.html" class="back-link">← Назад к списку чатов</a>
+<body data-theme="dark">
     <div class="container">
         <div class="header">
-            <h1>{html.escape(chat_title)}</h1>
-            <div class="stats">Всего сообщений: {len(messages)}</div>
+            <div class="header-left">
+                <a href="index.html" class="back-btn">←</a>
+                <div class="chat-info">
+                    <div class="chat-title">{html.escape(chat_title)}</div>
+                    <div class="chat-subtitle">{len(messages)} сообщений</div>
+                </div>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Переключить тему">🌓</button>
         </div>
         <div class="search-box">
-            <input type="text" id="searchInput" placeholder="🔍 Поиск по сообщениям..." onkeyup="filterMessages()">
+            <input type="text" id="searchInput" placeholder="🔍 Поиск в чате..." onkeyup="filterMessages()">
         </div>
         <div class="messages" id="messagesContainer">
-            {messages_html}
+            {messages_html if messages_html else '<div class="empty-state">Нет сообщений</div>'}
         </div>
     </div>
     <script>
+        // Восстановить тему из localStorage
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        document.body.setAttribute('data-theme', savedTheme);
+        
+        function toggleTheme() {{
+            const body = document.body;
+            const currentTheme = body.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            body.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        }}
+        
         function filterMessages() {{
             const input = document.getElementById('searchInput');
             const filter = input.value.toLowerCase();
-            const messages = document.querySelectorAll('.message');
-
+            const messages = document.querySelectorAll('.message-bubble');
+            
+            let visibleCount = 0;
             messages.forEach(message => {{
                 const text = message.textContent.toLowerCase();
-                message.style.display = text.includes(filter) ? '' : 'none';
+                const isVisible = text.includes(filter);
+                message.style.display = isVisible ? 'flex' : 'none';
+                if (isVisible) visibleCount++;
             }});
         }}
+        
+        // Автоматическая прокрутка вниз при загрузке
+        window.addEventListener('load', () => {{
+            const container = document.querySelector('.messages');
+            container.scrollTop = container.scrollHeight;
+        }});
     </script>
 </body>
 </html>"""
 
     def _format_message_html(self, msg: Dict[str, Any]) -> str:
         """
-        Форматировать одно сообщение в HTML.
+        Форматировать одно сообщение в HTML (стиль Telegram Web).
 
         Parameters
         ----------
@@ -607,72 +811,149 @@ class MessageHistory:
         """
         msg_id = msg.get("id", "?")
         date_str = msg.get("date", "")
+        time_str = ""
         if date_str:
             try:
                 date_obj = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                date_str = date_obj.strftime("%d.%m.%Y %H:%M:%S")
+                date_str = date_obj.strftime("%d.%m.%Y")
+                time_str = date_obj.strftime("%H:%M")
             except:
                 pass
-
+        
         text = msg.get("text", "")
-        text_html = html.escape(text) if text else '<span class="empty">[Нет текста]</span>'
-
+        
+        # Обработать медиа с превью
         media_html = ""
-        if msg.get("has_media"):
+        if msg.get("downloaded_file"):
+            file_path = msg["downloaded_file"]
+            # Использовать абсолютный путь с file:// протоколом
+            abs_path = os.path.abspath(file_path) if not os.path.isabs(file_path) else file_path
+            file_url = f"file://{abs_path}"
+            
+            media_type = msg.get("media_type", "unknown")
+            file_name = msg.get("file_name", os.path.basename(file_path))
+            file_size = msg.get("file_size", 0)
+            
+            # Превью для изображений
+            if media_type == "photo":
+                media_html = f'''
+                <div class="media-preview photo-preview">
+                    <a href="{html.escape(file_url)}" target="_blank">
+                        <img src="{html.escape(file_url)}" alt="Фото" loading="lazy" 
+                             onerror="this.parentElement.innerHTML='<div class=\\'media-error\\'>❌ Не удалось загрузить фото</div>'">
+                    </a>
+                </div>'''
+            
+            # Превью для видео
+            elif media_type in ["video", "video_note"]:
+                duration = msg.get("duration", 0)
+                duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
+                media_html = f'''
+                <div class="media-preview video-preview">
+                    <video controls preload="metadata" 
+                           onerror="this.outerHTML='<div class=\\'media-error\\'>❌ Не удалось загрузить видео</div>'">
+                        <source src="{html.escape(file_url)}" type="video/mp4">
+                        Ваш браузер не поддерживает видео
+                    </video>
+                    {f'<div class="video-duration">{duration_str}</div>' if duration_str else ''}
+                </div>'''
+            
+            # Файлы (документы, аудио)
+            else:
+                size_str = self._format_file_size(file_size)
+                icon = self._get_file_icon(media_type)
+                media_html = f'''
+                <div class="media-file">
+                    <a href="{html.escape(file_url)}" target="_blank" class="file-download">
+                        <div class="file-icon">{icon}</div>
+                        <div class="file-info">
+                            <div class="file-name">{html.escape(file_name)}</div>
+                            <div class="file-size">{size_str} • {media_type.upper()}</div>
+                        </div>
+                        <div class="download-icon">⬇️</div>
+                    </a>
+                </div>'''
+        
+        elif msg.get("has_media"):
+            # Медиа есть, но файл не скачан
             media_type = msg.get("media_type", "unknown")
             file_name = msg.get("file_name", "")
             file_size = msg.get("file_size", 0)
-            duration = msg.get("duration")
-            width = msg.get("width")
-            height = msg.get("height")
-
-            media_html = f'<div class="media-info">'
-            media_html += f'<div class="media-badge">{media_type.upper()}</div>'
-
-            details = []
-            if file_name:
-                details.append(f"<div>📄 Файл: {html.escape(file_name)}</div>")
-            if file_size:
-                size_mb = file_size / (1024 * 1024)
-                details.append(f"<div>💾 Размер: {size_mb:.2f} МБ</div>")
-            if duration:
-                details.append(f"<div>⏱️ Длительность: {duration} сек</div>")
-            if width and height:
-                details.append(f"<div>📐 Разрешение: {width}×{height}</div>")
-
-            media_html += "".join(details)
-            media_html += '</div>'
-
-        file_html = ""
-        if msg.get("downloaded_file"):
-            file_path = msg["downloaded_file"]
-            # Создать относительный путь от папки history
-            rel_path = os.path.relpath(file_path, self.history_path)
-            file_html = f'<a href="{html.escape(rel_path)}" class="file-link" target="_blank">Открыть файл</a>'
-
-        meta_html = '<div class="meta-info">'
+            size_str = self._format_file_size(file_size)
+            icon = self._get_file_icon(media_type)
+            
+            media_html = f'''
+            <div class="media-file not-downloaded">
+                <div class="file-icon">{icon}</div>
+                <div class="file-info">
+                    <div class="file-name">{html.escape(file_name) if file_name else f'{media_type.upper()}'}</div>
+                    <div class="file-size">{size_str} • Не скачано</div>
+                </div>
+            </div>'''
+        
+        # Текст сообщения
+        text_html = ""
+        if text:
+            # Конвертировать ссылки в кликабельные
+            text_escaped = html.escape(text)
+            import re
+            # Простая замена URL
+            url_pattern = r'(https?://[^\s]+)'
+            text_escaped = re.sub(url_pattern, r'<a href="\1" target="_blank" class="message-link">\1</a>', text_escaped)
+            text_html = f'<div class="message-text">{text_escaped}</div>'
+        
+        # Мета информация
+        meta_parts = []
         if msg.get("views"):
-            meta_html += f'<div class="meta-item">👁️ {msg["views"]}</div>'
+            meta_parts.append(f'<span class="meta-views">👁 {msg["views"]}</span>')
         if msg.get("forwards"):
-            meta_html += f'<div class="meta-item">🔄 {msg["forwards"]}</div>'
-        if msg.get("reply_to_msg_id"):
-            meta_html += f'<div class="meta-item">↩️ Ответ на #{msg["reply_to_msg_id"]}</div>'
+            meta_parts.append(f'<span class="meta-forwards">🔄 {msg["forwards"]}</span>')
         if msg.get("edit_date"):
-            meta_html += f'<div class="meta-item">✏️ Отредактировано</div>'
-        meta_html += '</div>'
-
-        return f"""
-        <div class="message">
-            <div class="message-header">
-                <span class="message-id">#{msg_id}</span>
-                <span class="message-date">{date_str}</span>
-            </div>
-            <div class="message-text">{text_html}</div>
+            meta_parts.append(f'<span class="meta-edited">edited</span>')
+        
+        meta_html = ""
+        if meta_parts:
+            meta_html = f'<div class="message-meta">{" ".join(meta_parts)}</div>'
+        
+        # Ответ на сообщение
+        reply_html = ""
+        if msg.get("reply_to_msg_id"):
+            reply_html = f'<div class="message-reply">↩️ Ответ на сообщение #{msg["reply_to_msg_id"]}</div>'
+        
+        return f'''
+        <div class="message-bubble" data-message-id="{msg_id}">
+            {reply_html}
             {media_html}
-            {file_html}
-            {meta_html}
+            {text_html}
+            <div class="message-footer">
+                <span class="message-time">{time_str}</span>
+                {meta_html}
+            </div>
         </div>
-        """
+        '''
+    
+    def _format_file_size(self, size_bytes: int) -> str:
+        """Форматировать размер файла."""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+    
+    def _get_file_icon(self, media_type: str) -> str:
+        """Получить иконку для типа файла."""
+        icons = {
+            "photo": "🖼️",
+            "video": "🎬",
+            "video_note": "🎥",
+            "audio": "🎵",
+            "voice": "🎤",
+            "document": "📄",
+        }
+        return icons.get(media_type, "📎")
 
     def _generate_index_html(self) -> None:
         """Сгенерировать индексный HTML файл со списком всех чатов."""
@@ -691,17 +972,24 @@ class MessageHistory:
             last_date = info.get("last_message_date")
             date_str = last_date.strftime("%d.%m.%Y %H:%M") if last_date else "Неизвестно"
 
+            # Получить первую букву для аватара
+            first_letter = title[0].upper() if title else "?"
+            
             chats_html += f"""
-            <div class="chat-card">
-                <div class="chat-header">
-                    <h3>{html.escape(title)}</h3>
-                    <span class="chat-date">{date_str}</span>
+            <a href="chat_{chat_id}.html" class="chat-card">
+                <div class="chat-avatar">{first_letter}</div>
+                <div class="chat-name">{html.escape(title)}</div>
+                <div class="chat-info">
+                    <span>💬 {count}</span>
+                    <span>{date_str}</span>
                 </div>
                 <div class="chat-stats">
-                    <span>💬 {count} сообщений</span>
+                    <div class="stat-item">
+                        <span>📊</span>
+                        <span>{count} сообщений</span>
+                    </div>
                 </div>
-                <a href="chat_{chat_id}.html" class="chat-link">Открыть чат →</a>
-            </div>
+            </a>
             """
 
         html_content = f"""<!DOCTYPE html>
@@ -709,115 +997,204 @@ class MessageHistory:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>История Telegram чатов</title>
+    <title>Telegram History Viewer</title>
     <style>
+        :root {{
+            --bg-color: #0f0f0f;
+            --card-bg: #212121;
+            --text-color: #e4e4e4;
+            --text-secondary: #8e8e93;
+            --accent-color: #8774e1;
+            --border-color: #2f2f2f;
+        }}
+        
+        [data-theme="light"] {{
+            --bg-color: #f4f4f5;
+            --card-bg: #ffffff;
+            --text-color: #000000;
+            --text-secondary: #707579;
+            --accent-color: #3390ec;
+            --border-color: #e4e4e5;
+        }}
+        
         * {{
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }}
+        
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 40px 20px;
+            background: var(--bg-color);
+            color: var(--text-color);
+            padding: 20px;
             min-height: 100vh;
         }}
+        
         .container {{
             max-width: 1200px;
             margin: 0 auto;
         }}
-        .main-header {{
+        
+        .header {{
             text-align: center;
-            color: white;
             margin-bottom: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
         }}
-        .main-header h1 {{
-            font-size: 48px;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        
+        .header h1 {{
+            font-size: 42px;
+            font-weight: 600;
         }}
-        .main-header p {{
-            font-size: 18px;
-            opacity: 0.9;
+        
+        .header p {{
+            font-size: 16px;
+            color: var(--text-secondary);
         }}
+        
+        .theme-toggle {{
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 10px 20px;
+            font-size: 20px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }}
+        
+        .theme-toggle:hover {{
+            transform: scale(1.05);
+        }}
+        
         .chats-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 24px;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
         }}
+        
         .chat-card {{
-            background: white;
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            transition: transform 0.3s, box-shadow 0.3s;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            transition: transform 0.2s, border-color 0.2s;
+            cursor: pointer;
+            text-decoration: none;
+            color: var(--text-color);
             display: flex;
             flex-direction: column;
         }}
+        
         .chat-card:hover {{
-            transform: translateY(-8px);
-            box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+            transform: translateY(-4px);
+            border-color: var(--accent-color);
         }}
-        .chat-header {{
+        
+        .chat-avatar {{
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-color), #6b5ce7);
             display: flex;
-            justify-content: space-between;
-            align-items: start;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
             margin-bottom: 16px;
         }}
-        .chat-header h3 {{
-            color: #212529;
-            font-size: 20px;
-            flex: 1;
-            margin-right: 12px;
-        }}
-        .chat-date {{
-            font-size: 12px;
-            color: #6c757d;
+        
+        .chat-name {{
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
             white-space: nowrap;
         }}
-        .chat-stats {{
-            color: #6c757d;
-            font-size: 14px;
-            margin-bottom: 16px;
+        
+        .chat-info {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
         }}
-        .chat-link {{
-            display: inline-block;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 12px 24px;
-            border-radius: 8px;
-            text-decoration: none;
-            font-weight: bold;
-            text-align: center;
-            transition: opacity 0.2s;
+        
+        .chat-stats {{
+            display: flex;
+            gap: 16px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
             margin-top: auto;
         }}
-        .chat-link:hover {{
-            opacity: 0.9;
+        
+        .stat-item {{
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }}
+        
         .empty-state {{
             text-align: center;
-            color: white;
-            padding: 60px 20px;
-            background: rgba(255,255,255,0.1);
+            padding: 80px 20px;
+            color: var(--text-secondary);
+            background: var(--card-bg);
+            border: 2px dashed var(--border-color);
             border-radius: 16px;
         }}
+        
+        .empty-state-icon {{
+            font-size: 64px;
+            margin-bottom: 20px;
+        }}
+        
         .empty-state h2 {{
-            font-size: 32px;
-            margin-bottom: 16px;
+            font-size: 24px;
+            margin-bottom: 12px;
+            color: var(--text-color);
+        }}
+        
+        @media (max-width: 768px) {{
+            .chats-grid {{
+                grid-template-columns: 1fr;
+            }}
         }}
     </style>
 </head>
-<body>
+<body data-theme="dark">
     <div class="container">
-        <div class="main-header">
-            <h1>📱 История Telegram</h1>
-            <p>Просмотр загруженных чатов</p>
+        <div class="header">
+            <h1>📱 Telegram History</h1>
+            <p>Просмотр сохранённых чатов</p>
+            <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
         </div>
         <div class="chats-grid">
-            {chats_html if chats_html else '<div class="empty-state"><h2>Пока нет сохраненных чатов</h2><p>Начните загрузку, чтобы увидеть чаты здесь</p></div>'}
+            {chats_html if chats_html else '''
+            <div class="empty-state" style="grid-column: 1 / -1;">
+                <div class="empty-state-icon">💬</div>
+                <h2>Пока нет сохранённых чатов</h2>
+                <p>Запустите загрузку медиа, чтобы увидеть историю чатов здесь</p>
+            </div>
+            '''}
         </div>
     </div>
+    <script>
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        document.body.setAttribute('data-theme', savedTheme);
+        
+        function toggleTheme() {{
+            const body = document.body;
+            const currentTheme = body.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            body.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        }}
+    </script>
 </body>
 </html>"""
 
