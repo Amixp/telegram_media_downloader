@@ -446,8 +446,8 @@ class DownloadManager:
             chat_title = getattr(messages[0].chat, "title", None)
             # Создать словарь только для текущего чата
             chat_files = {
-                msg_id: path 
-                for (cid, msg_id), path in self.downloaded_files.items() 
+                msg_id: path
+                for (cid, msg_id), path in self.downloaded_files.items()
                 if cid == chat_id
             }
             # Сохранить ВСЕ сообщения с информацией о скачанных файлах
@@ -633,7 +633,7 @@ class DownloadManager:
 
         self.config["last_read_message_id"] = last_read_message_id
         self.update_config(chat_id)
-        
+
         # Очистить downloaded_files для текущего чата для экономии памяти
         keys_to_remove = [key for key in self.downloaded_files.keys() if key[0] == chat_id]
         for key in keys_to_remove:

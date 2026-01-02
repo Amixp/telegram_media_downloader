@@ -416,7 +416,7 @@ class MessageHistory:
             --header-bg: #17212b;
             --border-color: #2f2f2f;
         }}
-        
+
         [data-theme="light"] {{
             --bg-color: #f4f4f5;
             --chat-bg: #ffffff;
@@ -427,20 +427,20 @@ class MessageHistory:
             --header-bg: #ffffff;
             --border-color: #e4e4e5;
         }}
-        
+
         * {{
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }}
-        
+
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: var(--bg-color);
             color: var(--text-color);
             min-height: 100vh;
         }}
-        
+
         .container {{
             max-width: 900px;
             margin: 0 auto;
@@ -449,7 +449,7 @@ class MessageHistory:
             display: flex;
             flex-direction: column;
         }}
-        
+
         .header {{
             background: var(--header-bg);
             border-bottom: 1px solid var(--border-color);
@@ -462,40 +462,40 @@ class MessageHistory:
             z-index: 100;
             backdrop-filter: blur(10px);
         }}
-        
+
         .header-left {{
             display: flex;
             align-items: center;
             gap: 12px;
         }}
-        
+
         .back-btn {{
             color: var(--text-color);
             text-decoration: none;
             font-size: 24px;
             transition: opacity 0.2s;
         }}
-        
+
         .back-btn:hover {{
             opacity: 0.7;
         }}
-        
+
         .chat-info {{
             display: flex;
             flex-direction: column;
         }}
-        
+
         .chat-title {{
             font-size: 15px;
             font-weight: 500;
             color: var(--text-color);
         }}
-        
+
         .chat-subtitle {{
             font-size: 13px;
             color: var(--text-secondary);
         }}
-        
+
         .theme-toggle {{
             background: none;
             border: none;
@@ -504,11 +504,11 @@ class MessageHistory:
             padding: 8px;
             transition: transform 0.2s;
         }}
-        
+
         .theme-toggle:hover {{
             transform: scale(1.1);
         }}
-        
+
         .search-box {{
             padding: 12px 20px;
             background: var(--chat-bg);
@@ -518,7 +518,7 @@ class MessageHistory:
             z-index: 99;
             backdrop-filter: blur(10px);
         }}
-        
+
         .search-box input {{
             width: 100%;
             padding: 10px 16px;
@@ -529,12 +529,12 @@ class MessageHistory:
             color: var(--text-color);
             transition: border-color 0.2s;
         }}
-        
+
         .search-box input:focus {{
             outline: none;
             border-color: var(--accent-color);
         }}
-        
+
         .messages {{
             flex: 1;
             padding: 20px;
@@ -543,7 +543,7 @@ class MessageHistory:
             flex-direction: column;
             gap: 8px;
         }}
-        
+
         .message-bubble {{
             max-width: 70%;
             background: var(--message-bg);
@@ -554,12 +554,12 @@ class MessageHistory:
             animation: fadeIn 0.2s ease-in;
             align-self: flex-start;
         }}
-        
+
         @keyframes fadeIn {{
             from {{ opacity: 0; transform: translateY(10px); }}
             to {{ opacity: 1; transform: translateY(0); }}
         }}
-        
+
         .message-reply {{
             background: var(--accent-color);
             background: linear-gradient(90deg, var(--accent-color) 3px, transparent 3px);
@@ -570,7 +570,7 @@ class MessageHistory:
             color: var(--text-secondary);
             margin-bottom: 6px;
         }}
-        
+
         .message-text {{
             font-size: 15px;
             line-height: 1.5;
@@ -578,23 +578,23 @@ class MessageHistory:
             white-space: pre-wrap;
             margin: 4px 0;
         }}
-        
+
         .message-link {{
             color: var(--accent-color);
             text-decoration: none;
         }}
-        
+
         .message-link:hover {{
             text-decoration: underline;
         }}
-        
+
         .media-preview {{
             margin: 4px 0;
             border-radius: 8px;
             overflow: hidden;
             max-width: 100%;
         }}
-        
+
         .photo-preview img {{
             display: block;
             max-width: 100%;
@@ -605,15 +605,15 @@ class MessageHistory:
             cursor: pointer;
             transition: transform 0.2s;
         }}
-        
+
         .photo-preview img:hover {{
             transform: scale(1.02);
         }}
-        
+
         .video-preview {{
             position: relative;
         }}
-        
+
         .video-preview video {{
             display: block;
             max-width: 100%;
@@ -621,7 +621,7 @@ class MessageHistory:
             width: auto;
             border-radius: 8px;
         }}
-        
+
         .video-duration {{
             position: absolute;
             bottom: 8px;
@@ -633,14 +633,14 @@ class MessageHistory:
             font-size: 12px;
             font-weight: 500;
         }}
-        
+
         .media-file {{
             background: var(--message-bg);
             border: 1px solid var(--border-color);
             border-radius: 8px;
             margin: 4px 0;
         }}
-        
+
         .file-download {{
             display: flex;
             align-items: center;
@@ -650,21 +650,21 @@ class MessageHistory:
             color: var(--text-color);
             transition: background 0.2s;
         }}
-        
+
         .file-download:hover {{
             background: var(--border-color);
         }}
-        
+
         .file-icon {{
             font-size: 32px;
             flex-shrink: 0;
         }}
-        
+
         .file-info {{
             flex: 1;
             min-width: 0;
         }}
-        
+
         .file-name {{
             font-size: 14px;
             font-weight: 500;
@@ -672,22 +672,22 @@ class MessageHistory:
             text-overflow: ellipsis;
             white-space: nowrap;
         }}
-        
+
         .file-size {{
             font-size: 13px;
             color: var(--text-secondary);
             margin-top: 2px;
         }}
-        
+
         .download-icon {{
             font-size: 20px;
             flex-shrink: 0;
         }}
-        
+
         .not-downloaded {{
             opacity: 0.6;
         }}
-        
+
         .media-error {{
             padding: 20px;
             text-align: center;
@@ -695,7 +695,7 @@ class MessageHistory:
             border-radius: 8px;
             color: var(--text-secondary);
         }}
-        
+
         .message-footer {{
             display: flex;
             align-items: center;
@@ -705,34 +705,34 @@ class MessageHistory:
             font-size: 12px;
             color: var(--text-secondary);
         }}
-        
+
         .message-time {{
             font-size: 11px;
         }}
-        
+
         .message-meta {{
             display: flex;
             align-items: center;
             gap: 6px;
         }}
-        
+
         .meta-views, .meta-forwards {{
             display: flex;
             align-items: center;
             gap: 2px;
         }}
-        
+
         .meta-edited {{
             font-style: italic;
             font-size: 11px;
         }}
-        
+
         .empty-state {{
             text-align: center;
             padding: 60px 20px;
             color: var(--text-secondary);
         }}
-        
+
         @media (max-width: 768px) {{
             .message-bubble {{
                 max-width: 85%;
@@ -763,7 +763,7 @@ class MessageHistory:
         // Восстановить тему из localStorage
         const savedTheme = localStorage.getItem('theme') || 'dark';
         document.body.setAttribute('data-theme', savedTheme);
-        
+
         function toggleTheme() {{
             const body = document.body;
             const currentTheme = body.getAttribute('data-theme');
@@ -771,12 +771,12 @@ class MessageHistory:
             body.setAttribute('data-theme', newTheme);
             localStorage.setItem('theme', newTheme);
         }}
-        
+
         function filterMessages() {{
             const input = document.getElementById('searchInput');
             const filter = input.value.toLowerCase();
             const messages = document.querySelectorAll('.message-bubble');
-            
+
             let visibleCount = 0;
             messages.forEach(message => {{
                 const text = message.textContent.toLowerCase();
@@ -785,7 +785,7 @@ class MessageHistory:
                 if (isVisible) visibleCount++;
             }});
         }}
-        
+
         // Автоматическая прокрутка вниз при загрузке
         window.addEventListener('load', () => {{
             const container = document.querySelector('.messages');
@@ -819,9 +819,9 @@ class MessageHistory:
                 time_str = date_obj.strftime("%H:%M")
             except:
                 pass
-        
+
         text = msg.get("text", "")
-        
+
         # Обработать медиа с превью
         media_html = ""
         if msg.get("downloaded_file"):
@@ -829,21 +829,21 @@ class MessageHistory:
             # Использовать абсолютный путь с file:// протоколом
             abs_path = os.path.abspath(file_path) if not os.path.isabs(file_path) else file_path
             file_url = f"file://{abs_path}"
-            
+
             media_type = msg.get("media_type", "unknown")
             file_name = msg.get("file_name", os.path.basename(file_path))
             file_size = msg.get("file_size", 0)
-            
+
             # Превью для изображений
             if media_type == "photo":
                 media_html = f'''
                 <div class="media-preview photo-preview">
                     <a href="{html.escape(file_url)}" target="_blank">
-                        <img src="{html.escape(file_url)}" alt="Фото" loading="lazy" 
+                        <img src="{html.escape(file_url)}" alt="Фото" loading="lazy"
                              onerror="this.parentElement.innerHTML='<div class=\\'media-error\\'>❌ Не удалось загрузить фото</div>'">
                     </a>
                 </div>'''
-            
+
             # Превью для видео
             elif media_type in ["video", "video_note"]:
                 duration = msg.get("duration", 0)
@@ -855,14 +855,14 @@ class MessageHistory:
                     duration_str = ""
                 media_html = f'''
                 <div class="media-preview video-preview">
-                    <video controls preload="metadata" 
+                    <video controls preload="metadata"
                            onerror="this.outerHTML='<div class=\\'media-error\\'>❌ Не удалось загрузить видео</div>'">
                         <source src="{html.escape(file_url)}" type="video/mp4">
                         Ваш браузер не поддерживает видео
                     </video>
                     {f'<div class="video-duration">{duration_str}</div>' if duration_str else ''}
                 </div>'''
-            
+
             # Файлы (документы, аудио)
             else:
                 size_str = self._format_file_size(file_size)
@@ -878,7 +878,7 @@ class MessageHistory:
                         <div class="download-icon">⬇️</div>
                     </a>
                 </div>'''
-        
+
         elif msg.get("has_media"):
             # Медиа есть, но файл не скачан
             media_type = msg.get("media_type", "unknown")
@@ -886,7 +886,7 @@ class MessageHistory:
             file_size = msg.get("file_size", 0)
             size_str = self._format_file_size(file_size)
             icon = self._get_file_icon(media_type)
-            
+
             media_html = f'''
             <div class="media-file not-downloaded">
                 <div class="file-icon">{icon}</div>
@@ -895,7 +895,7 @@ class MessageHistory:
                     <div class="file-size">{size_str} • Не скачано</div>
                 </div>
             </div>'''
-        
+
         # Текст сообщения
         text_html = ""
         if text:
@@ -906,7 +906,7 @@ class MessageHistory:
             url_pattern = r'(https?://[^\s]+)'
             text_escaped = re.sub(url_pattern, r'<a href="\1" target="_blank" class="message-link">\1</a>', text_escaped)
             text_html = f'<div class="message-text">{text_escaped}</div>'
-        
+
         # Мета информация
         meta_parts = []
         if msg.get("views"):
@@ -915,16 +915,16 @@ class MessageHistory:
             meta_parts.append(f'<span class="meta-forwards">🔄 {msg["forwards"]}</span>')
         if msg.get("edit_date"):
             meta_parts.append(f'<span class="meta-edited">edited</span>')
-        
+
         meta_html = ""
         if meta_parts:
             meta_html = f'<div class="message-meta">{" ".join(meta_parts)}</div>'
-        
+
         # Ответ на сообщение
         reply_html = ""
         if msg.get("reply_to_msg_id"):
             reply_html = f'<div class="message-reply">↩️ Ответ на сообщение #{msg["reply_to_msg_id"]}</div>'
-        
+
         return f'''
         <div class="message-bubble" data-message-id="{msg_id}">
             {reply_html}
@@ -936,7 +936,7 @@ class MessageHistory:
             </div>
         </div>
         '''
-    
+
     def _format_file_size(self, size_bytes: int) -> str:
         """Форматировать размер файла."""
         if size_bytes < 1024:
@@ -947,7 +947,7 @@ class MessageHistory:
             return f"{size_bytes / (1024 * 1024):.1f} MB"
         else:
             return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
-    
+
     def _get_file_icon(self, media_type: str) -> str:
         """Получить иконку для типа файла."""
         icons = {
@@ -979,7 +979,7 @@ class MessageHistory:
 
             # Получить первую букву для аватара
             first_letter = title[0].upper() if title else "?"
-            
+
             chats_html += f"""
             <a href="chat_{chat_id}.html" class="chat-card">
                 <div class="chat-avatar">{first_letter}</div>
@@ -1012,7 +1012,7 @@ class MessageHistory:
             --accent-color: #8774e1;
             --border-color: #2f2f2f;
         }}
-        
+
         [data-theme="light"] {{
             --bg-color: #f4f4f5;
             --card-bg: #ffffff;
@@ -1021,13 +1021,13 @@ class MessageHistory:
             --accent-color: #3390ec;
             --border-color: #e4e4e5;
         }}
-        
+
         * {{
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }}
-        
+
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: var(--bg-color);
@@ -1035,12 +1035,12 @@ class MessageHistory:
             padding: 20px;
             min-height: 100vh;
         }}
-        
+
         .container {{
             max-width: 1200px;
             margin: 0 auto;
         }}
-        
+
         .header {{
             text-align: center;
             margin-bottom: 40px;
@@ -1049,17 +1049,17 @@ class MessageHistory:
             align-items: center;
             gap: 20px;
         }}
-        
+
         .header h1 {{
             font-size: 42px;
             font-weight: 600;
         }}
-        
+
         .header p {{
             font-size: 16px;
             color: var(--text-secondary);
         }}
-        
+
         .theme-toggle {{
             background: var(--card-bg);
             border: 1px solid var(--border-color);
@@ -1069,17 +1069,17 @@ class MessageHistory:
             cursor: pointer;
             transition: transform 0.2s;
         }}
-        
+
         .theme-toggle:hover {{
             transform: scale(1.05);
         }}
-        
+
         .chats-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
             gap: 20px;
         }}
-        
+
         .chat-card {{
             background: var(--card-bg);
             border: 1px solid var(--border-color);
@@ -1092,12 +1092,12 @@ class MessageHistory:
             display: flex;
             flex-direction: column;
         }}
-        
+
         .chat-card:hover {{
             transform: translateY(-4px);
             border-color: var(--accent-color);
         }}
-        
+
         .chat-avatar {{
             width: 48px;
             height: 48px;
@@ -1109,7 +1109,7 @@ class MessageHistory:
             font-size: 24px;
             margin-bottom: 16px;
         }}
-        
+
         .chat-name {{
             font-size: 16px;
             font-weight: 500;
@@ -1118,7 +1118,7 @@ class MessageHistory:
             text-overflow: ellipsis;
             white-space: nowrap;
         }}
-        
+
         .chat-info {{
             display: flex;
             justify-content: space-between;
@@ -1127,7 +1127,7 @@ class MessageHistory:
             color: var(--text-secondary);
             margin-bottom: 12px;
         }}
-        
+
         .chat-stats {{
             display: flex;
             gap: 16px;
@@ -1137,13 +1137,13 @@ class MessageHistory:
             border-top: 1px solid var(--border-color);
             margin-top: auto;
         }}
-        
+
         .stat-item {{
             display: flex;
             align-items: center;
             gap: 4px;
         }}
-        
+
         .empty-state {{
             text-align: center;
             padding: 80px 20px;
@@ -1152,18 +1152,18 @@ class MessageHistory:
             border: 2px dashed var(--border-color);
             border-radius: 16px;
         }}
-        
+
         .empty-state-icon {{
             font-size: 64px;
             margin-bottom: 20px;
         }}
-        
+
         .empty-state h2 {{
             font-size: 24px;
             margin-bottom: 12px;
             color: var(--text-color);
         }}
-        
+
         @media (max-width: 768px) {{
             .chats-grid {{
                 grid-template-columns: 1fr;
@@ -1191,7 +1191,7 @@ class MessageHistory:
     <script>
         const savedTheme = localStorage.getItem('theme') || 'dark';
         document.body.setAttribute('data-theme', savedTheme);
-        
+
         function toggleTheme() {{
             const body = document.body;
             const currentTheme = body.getAttribute('data-theme');
