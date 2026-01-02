@@ -1,4 +1,5 @@
 """Модуль для фильтрации сообщений."""
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from telethon.tl.types import Message
@@ -21,6 +22,10 @@ class MediaFilter:
         self.enabled = self.sender_filter.get("enabled", False)
         self.user_ids = self.sender_filter.get("user_ids", [])
         self.usernames = self.sender_filter.get("usernames", [])
+        
+        # Преобразование дат из конфига в datetime объекты
+        self.start_date = self._parse_date(config.get("start_date"))
+        self.end_date = self._parse_date(config.get("end_date"))
 
     def should_download_by_sender(self, message: Message) -> bool:
         """
@@ -59,6 +64,31 @@ class MediaFilter:
             pass
 
         return False
+
+    def _parse_date(self, date_val: Any) -> Optional[datetime]:
+        """
+        Преобразовать значение даты из конфига в datetime объект.
+
+        Parameters
+        ----------
+        date_val: Any
+            Значение даты из конфига (строка ISO формата, date объект или None).
+
+        Returns
+        -------
+        Optional[datetime]
+            Datetime объект с timezone UTC или None.
+        """
+        if isinstance(date_val, str) and date_val.strip():
+            parsed_date = datetime.fromisoformat(date_val)
+            if parsed_date.tzinfo is None:
+                parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+            return parsed_date
+        elif isinstance(date_val, date):
+            return datetime.combine(
+                date_val, datetime.min.time(), tzinfo=timezone.utc
+            )
+        return None
 
     def should_download_by_size(
         self, file_size: Optional[int], min_size: Optional[int] = None, max_size: Optional[int] = None
@@ -137,10 +167,8 @@ class MediaFilter:
         if not self.should_download_by_sender(message):
             return False
 
-        # Фильтр по дате (берется из конфига)
-        start_date = self.config.get("start_date")
-        end_date = self.config.get("end_date")
-        if not self.should_download_by_date(message.date, start_date, end_date):
+        # Фильтр по дате (используются предварительно преобразованные datetime объекты)
+        if not self.should_download_by_date(message.date, self.start_date, self.end_date):
             return False
 
         return True
