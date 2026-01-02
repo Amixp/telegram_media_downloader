@@ -19,14 +19,14 @@
 </h3>
 
 ### Overview:
-Download all media files from a conversation or a channel that you are a part of from telegram.
+Download all media files and history from a conversation or a channel that you are a part of from telegram.
 A meta of last read/downloaded message is stored in the config file so that in such a way it won't download the same media file again.
 
 ### Support:
-| Category | Support |
-|--|--|
-|Language | `Python 3.8 ` and above|
-|Download media types|  audio, document, photo, video, video_note, voice|
+| Category             | Support                                          |
+| -------------------- | ------------------------------------------------ |
+| Language             | `Python 3.7 ` and above                          |
+| Download media types | audio, document, photo, video, video_note, voice |
 
 ### ToDo:
 - Add support for multiple channels/chats.
@@ -166,17 +166,13 @@ max_messages: null  # Limit the number of media items to download (integer)
 python3 media_downloader.py
 ```
 
-### Download Directories
-
-By default, all downloaded media will be stored in respective directories named after the media type in the same path as the python script.
-
-| Media type | Default Download directory |
-|--|--|
-| audio | path/to/project/audio |
-| document | path/to/project/document |
-| photo | path/to/project/photo |
-| video | path/to/project/video |
-| voice | path/to/project/voice |
+| Media type | Download directory         |
+| ---------- | -------------------------- |
+| audio      | path/to/project/audio      |
+| document   | path/to/project/document   |
+| photo      | path/to/project/photo      |
+| video      | path/to/project/video      |
+| voice      | path/to/project/voice      |
 | voice_note | path/to/project/voice_note |
 
 #### Custom Download Directory
