@@ -54,8 +54,8 @@ class DownloadManager:
         """
         self.config_manager = config_manager
         self.config = config_manager.config
-        self.failed_ids: List[int] = []
-        self.downloaded_ids: List[int] = []
+        self.failed_ids: List[Tuple[int, int]] = []  # [(chat_id, message_id), ...]
+        self.downloaded_ids: List[Tuple[int, int]] = []  # [(chat_id, message_id), ...]
         self.downloaded_files: Dict[Tuple[int, int], str] = {}  # {(chat_id, message_id): file_path}
         self.i18n = get_i18n(self.config.get("language", "ru"))
         self.media_filter = MediaFilter(self.config)
@@ -351,7 +351,9 @@ class DownloadManager:
                         # чтобы избежать коллизий между чатами
                         chat_id = message.chat.id if message.chat else 0
                         self.downloaded_files[(chat_id, message.id)] = download_path
-                    self.downloaded_ids.append(message.id)
+                    # Сохранить ID с контекстом чата для корректного retry механизма
+                    chat_id = message.chat.id if message.chat else 0
+                    self.downloaded_ids.append((chat_id, message.id))
                 break
             except FileReferenceExpiredError:
                 logger.warning(
@@ -363,7 +365,8 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_reference_expired_skip", id=message.id)
                     )
-                    self.failed_ids.append(message.id)
+                    chat_id = message.chat.id if message.chat else 0
+                    self.failed_ids.append((chat_id, message.id))
             except TimeoutError:
                 logger.warning(
                     self.i18n.t("timeout_error", id=message.id)
@@ -373,13 +376,15 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("timeout_skip", id=message.id)
                     )
-                    self.failed_ids.append(message.id)
+                    chat_id = message.chat.id if message.chat else 0
+                    self.failed_ids.append((chat_id, message.id))
             except Exception as e:
                 logger.error(
                     self.i18n.t("download_exception", id=message.id, error=str(e)),
                     exc_info=True,
                 )
-                self.failed_ids.append(message.id)
+                chat_id = message.chat.id if message.chat else 0
+                self.failed_ids.append((chat_id, message.id))
                 break
         return message.id
 
@@ -471,9 +476,23 @@ class DownloadManager:
         if chat_id is None:
             chat_id = config.get("chat_id")
 
-        # Обновить ids_to_retry
-        ids_to_retry = config.get("ids_to_retry", [])
-        ids_to_retry = list(set(ids_to_retry) - set(self.downloaded_ids)) + self.failed_ids
+        # Получить текущие ids_to_retry для этого чата
+        current_ids_to_retry = []
+        if "chats" in config and isinstance(config["chats"], list):
+            for chat in config["chats"]:
+                if chat.get("chat_id") == chat_id:
+                    current_ids_to_retry = chat.get("ids_to_retry", [])
+                    break
+        else:
+            # Старая структура конфига
+            current_ids_to_retry = config.get("ids_to_retry", [])
+
+        # Фильтровать downloaded_ids и failed_ids только для текущего чата
+        chat_downloaded_ids = [msg_id for (cid, msg_id) in self.downloaded_ids if cid == chat_id]
+        chat_failed_ids = [msg_id for (cid, msg_id) in self.failed_ids if cid == chat_id]
+        
+        # Обновить ids_to_retry: убрать успешно загруженные, добавить неудачные
+        ids_to_retry = list(set(current_ids_to_retry) - set(chat_downloaded_ids)) + chat_failed_ids
 
         # Обновить состояние чата
         self.config_manager.update_chat_state(
@@ -614,7 +633,9 @@ class DownloadManager:
                     download_directory,
                     semaphore,
                 )
-                if max_messages and len(self.downloaded_ids) >= max_messages:
+                # Проверка max_messages только для текущего чата
+                chat_downloaded_count = sum(1 for (cid, _) in self.downloaded_ids if cid == chat_id)
+                if max_messages and chat_downloaded_count >= max_messages:
                     break
                 pagination_count = 0
                 messages_list = []
@@ -638,6 +659,10 @@ class DownloadManager:
         keys_to_remove = [key for key in self.downloaded_files.keys() if key[0] == chat_id]
         for key in keys_to_remove:
             del self.downloaded_files[key]
+        
+        # Очистить downloaded_ids и failed_ids для текущего чата
+        self.downloaded_ids = [(cid, msg_id) for (cid, msg_id) in self.downloaded_ids if cid != chat_id]
+        self.failed_ids = [(cid, msg_id) for (cid, msg_id) in self.failed_ids if cid != chat_id]
 
 
 async def main_async():
