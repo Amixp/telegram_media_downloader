@@ -1,25 +1,99 @@
-api_hash: your_api_hash
+# Конфигурация Telegram Media Downloader
+
+# API ключи Telegram (получить на https://my.telegram.org/apps)
 api_id: your_api_id
-chat_id: telegram_chat_id
-last_read_message_id: 0
-ids_to_retry: []
+api_hash: your_api_hash
+
+# Язык интерфейса (ru или en)
+language: ru
+
+# Настройки загрузки
+download_settings:
+  # Количество одновременных загрузок (None = без ограничений)
+  max_parallel_downloads: 5
+  # Количество сообщений для обработки в одном пакете
+  pagination_limit: 100
+  # Базовая директория для загрузок (пусто = директория скрипта)
+  base_directory: ""
+  # Пропускать дубликаты файлов
+  skip_duplicates: true
+  # Загружать историю сообщений (текстовые сообщения)
+  download_message_history: false
+  # Формат истории (json или txt)
+  history_format: json
+  # Директория для истории сообщений
+  history_directory: history
+
+# Типы медиа для загрузки
+# Можно указать конкретные типы или "all" для всех типов
 media_types:
-- audio
-- photo
-- video
-- document
-- voice
-- video_note
+  - all
+  # Или конкретные типы:
+  # - audio
+  # - document
+  # - photo
+  # - video
+  # - voice
+  # - video_note
+
+# Форматы файлов для загрузки (для audio, document, video)
 file_formats:
   audio:
-  - all
+    - all
   document:
-  - all
+    - all
   video:
-  - all
+    - all
 
-#optional
-download_directory: null  # Custom directory path for downloads (absolute or relative)
-start_date: null
-end_date: null
-max_messages: null
+# Фильтр по отправителю
+sender_filter:
+  enabled: false
+  # Список ID пользователей
+  user_ids: []
+  # Список username (с @ или без)
+  usernames: []
+
+# Фильтры по дате
+# start_date: "2024-01-01"  # Начальная дата (ISO формат)
+# end_date: "2024-12-31"    # Конечная дата (ISO формат)
+# max_messages: 1000        # Максимальное количество сообщений для загрузки
+
+# Настройки логирования
+logging:
+  file_logging:
+    enabled: false
+    file_path: downloads.log
+    level: INFO  # DEBUG, INFO, WARNING, ERROR
+    max_bytes: 10485760  # 10 MB
+    backup_count: 5
+
+# Настройки прокси (опционально)
+# proxy:
+#   scheme: socks5  # socks4, socks5, http
+#   hostname: 11.22.33.44
+#   port: 1234
+#   username: your_username  # опционально
+#   password: your_password  # опционально
+
+# Интерактивный выбор чатов при запуске
+interactive_chat_selection: true
+
+# Список чатов для загрузки (поддерживается несколько чатов)
+# Если не указано, будет предложен интерактивный выбор
+chats:
+  - chat_id: 123456789
+    title: "Название чата"
+    last_read_message_id: 0
+    ids_to_retry: []
+    enabled: true
+  # - chat_id: 987654321
+  #   title: "Другой чат"
+  #   last_read_message_id: 0
+  #   ids_to_retry: []
+  #   enabled: true
+
+# Старая структура (для обратной совместимости)
+# Если указан chat_id, он будет использован как единственный чат
+# chat_id: telegram_chat_id
+# last_read_message_id: 0
+# ids_to_retry: []
