@@ -1,9 +1,12 @@
 """Утилиты для управления конфигурацией."""
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigManager:
@@ -112,6 +115,15 @@ class ConfigManager:
                     raise ValueError(
                         f"file_formats[{media_type}] должен быть списком"
                     )
+
+        # Валидация proxy
+        if "proxy" in self._config:
+            # Отложенный импорт для избежания циклической зависимости
+            from utils.proxy import validate_proxy_config
+            
+            if not validate_proxy_config(self._config["proxy"]):
+                logger.warning("⚠️ Конфигурация прокси невалидна, прокси не будет использован")
+                self._config["proxy"] = None
 
     def save(self, config: Optional[Dict[str, Any]] = None) -> None:
         """

@@ -138,14 +138,45 @@ logging:
 
 #### Прокси:
 
+Полная поддержка SOCKS4, SOCKS5 и HTTP прокси:
+
 ```yaml
 proxy:
   scheme: socks5  # socks4, socks5, http
   hostname: 11.22.33.44
   port: 1234
-  username: your_username  # опционально
-  password: your_password  # опционально
+  username: your_username  # опционально (для аутентификации)
+  password: your_password  # опционально (для аутентификации)
 ```
+
+**Примеры:**
+
+```yaml
+# SOCKS5 без аутентификации
+proxy:
+  scheme: socks5
+  hostname: 127.0.0.1
+  port: 1080
+
+# SOCKS5 с аутентификацией
+proxy:
+  scheme: socks5
+  hostname: proxy.example.com
+  port: 1080
+  username: myuser
+  password: mypass
+
+# HTTP прокси
+proxy:
+  scheme: http
+  hostname: proxy.company.com
+  port: 8080
+```
+
+**Валидация:**
+- Автоматическая проверка конфигурации при запуске
+- Понятные сообщения об ошибках
+- Поддержка всех типов прокси для Telegram
 
 #### Несколько чатов:
 

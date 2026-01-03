@@ -25,6 +25,7 @@ from utils.history import MessageHistory
 from utils.i18n import get_i18n
 from utils.log import LogFilter, configure_logging
 from utils.meta import APP_VERSION, DEVICE_MODEL, LANG_CODE, SYSTEM_VERSION, print_meta
+from utils.proxy import get_proxy_config
 from utils.updates import check_for_updates
 
 logging.basicConfig(
@@ -678,21 +679,12 @@ async def main_async():
         return
 
     # Создать клиент для выбора чатов
-    proxy = config.get("proxy")
-    proxy_dict = None
-    if proxy:
-        proxy_dict = {
-            "proxy_type": proxy["scheme"],
-            "addr": proxy["hostname"],
-            "port": proxy["port"],
-            "username": proxy.get("username"),
-            "password": proxy.get("password"),
-        }
+    proxy_config = get_proxy_config(config)
     client = TelegramClient(
         "media_downloader",
         api_id=config["api_id"],
         api_hash=config["api_hash"],
-        proxy=proxy_dict,
+        proxy=proxy_config,
         device_model=DEVICE_MODEL,
         system_version=SYSTEM_VERSION,
         app_version=APP_VERSION,
