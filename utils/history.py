@@ -870,14 +870,14 @@ class MessageHistory:
             HTML фрагмент сообщения.
         """
         msg_id = msg.get("id", "?")
-        date_str = msg.get("date", "")
+        date_iso = msg.get("date", "")
         time_str = ""
-        if date_str:
+        if date_iso:
             try:
-                date_obj = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                date_str = date_obj.strftime("%d.%m.%Y")
-                time_str = date_obj.strftime("%H:%M")
-            except:
+                date_obj = datetime.fromisoformat(str(date_iso).replace("Z", "+00:00"))
+                # Внизу сообщения показываем и дату, и время
+                time_str = date_obj.strftime("%d.%m.%Y %H:%M")
+            except Exception:
                 pass
 
         text = msg.get("text", "")

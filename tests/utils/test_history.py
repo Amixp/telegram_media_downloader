@@ -20,6 +20,20 @@ except Exception:  # pragma: no cover - optional dependency (telethon) may be mi
 
 @unittest.skipUnless(_HISTORY_AVAILABLE, "utils.history/telethon not available")
 class HistoryTestCase(unittest.TestCase):
+    def test_format_message_html_shows_date_and_time(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = MessageHistory(base_directory=tmpdir, history_format="html")
+            html_fragment = history._format_message_html(
+                {
+                    "id": 1,
+                    "date": "2020-01-02T03:04:05+00:00",
+                    "text": "x",
+                    "has_media": False,
+                }
+            )
+
+        self.assertIn("02.01.2020 03:04", html_fragment)
+
     def test_format_message_html_file_size_none_not_downloaded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             history = MessageHistory(base_directory=tmpdir, history_format="html")
