@@ -859,14 +859,16 @@ class ChatSelector:
             """
             Простой ввод строки внизу экрана.
 
-            Не делаем fancy editing — достаточно для поиска.
+            Используем curses.textpad.Textbox: видимый курсор + базовое редактирование.
             """
+            import curses.textpad  # локально: на Windows может отсутствовать curses
+
             height, width = stdscr.getmaxyx()
             y = height - 1
             stdscr.move(y, 0)
             stdscr.clrtoeol()
-            text = f"{prompt}{initial}"
-            stdscr.addstr(y, 0, _truncate(text, max(0, width - 1)))
+            prompt_s = str(prompt or "")
+            stdscr.addstr(y, 0, _truncate(prompt_s, max(0, width - 1)))
             stdscr.refresh()
 
             # Важно: основное окно работает в non-blocking режиме (nodelay/timeout(0)).
@@ -878,21 +880,64 @@ class ChatSelector:
             except Exception:
                 pass
 
-            curses.echo()
             try:
-                stdscr.move(y, min(len(prompt) + len(initial), max(0, width - 2)))
-                raw = stdscr.getstr(y, len(prompt), max(0, width - len(prompt) - 1))
+                # Показать курсор на время ввода
+                try:
+                    curses.curs_set(1)
+                except Exception:
+                    pass
+
+                x0 = min(len(prompt_s), max(0, width - 1))
+                edit_w = max(0, width - x0 - 1)
+                if edit_w <= 0:
+                    return initial
+
+                win = curses.newwin(1, edit_w, y, x0)
+                win.keypad(True)
+                win.erase()
+                init = (initial or "")[: max(0, edit_w - 1)]
+                try:
+                    win.addstr(0, 0, init)
+                except Exception:
+                    pass
+                try:
+                    win.move(0, min(len(init), max(0, edit_w - 1)))
+                except Exception:
+                    pass
+
+                cancelled = False
+
+                def _validator(ch: int) -> int:
+                    nonlocal cancelled
+                    if ch in (10, 13):  # Enter
+                        return 7  # Ctrl-G (end editing)
+                    if ch == 27:  # ESC
+                        cancelled = True
+                        return 7
+                    return ch
+
+                tb = curses.textpad.Textbox(win, insert_mode=True)
+                raw = tb.edit(_validator)
+                if cancelled:
+                    return initial
             finally:
-                curses.noecho()
+                try:
+                    curses.curs_set(0)
+                except Exception:
+                    pass
                 try:
                     stdscr.nodelay(True)
                     stdscr.timeout(0)
                 except Exception:
                     pass
             try:
-                return raw.decode("utf-8")
+                if isinstance(raw, bytes):
+                    s = raw.decode("utf-8", errors="replace")
+                else:
+                    s = str(raw)
+                return s.strip()
             except Exception:
-                return str(raw)
+                return str(raw).strip()
 
         def _color_to_curses(color_name: Any) -> int:
             name = str(color_name).strip().lower()
