@@ -62,6 +62,7 @@ video_note/
 
 # Config file
 config.yaml
+config.*.yaml
 
 # API credentials (NEVER commit these!)
 api-telegram.md
@@ -69,4 +70,4 @@ api-telegram.md
 
 # Reserved directories
 Книги для программистов (reserved)/utils/__init__.py
-config.Arexel.yaml
+tui-debug.log

@@ -120,7 +120,7 @@ class ConfigManager:
         if "proxy" in self._config:
             # Отложенный импорт для избежания циклической зависимости
             from utils.proxy import validate_proxy_config
-            
+
             if not validate_proxy_config(self._config["proxy"]):
                 logger.warning("⚠️ Конфигурация прокси невалидна, прокси не будет использован")
                 self._config["proxy"] = None
@@ -256,7 +256,7 @@ class ConfigManager:
             if isinstance(chat, dict):
                 chat["enabled"] = False
 
-        for chat_id, title in selected_chats:
+        for order_idx, (chat_id, title) in enumerate(selected_chats):
             existing = by_id.get(chat_id)
             if existing is None:
                 existing = {
@@ -278,6 +278,8 @@ class ConfigManager:
                 existing["ids_to_retry"] = []
 
             existing["enabled"] = True
+            # Порядок очереди загрузки (0-based)
+            existing["order"] = order_idx
 
     @property
     def config(self) -> Dict[str, Any]:

@@ -56,6 +56,9 @@ class ConfigManagerTestCase(unittest.TestCase):
         self.assertTrue(chats[300]["enabled"])
         self.assertEqual(chats[300]["last_read_message_id"], 0)
         self.assertEqual(chats[300]["ids_to_retry"], [])
+        # Порядок очереди сохраняется
+        self.assertEqual(chats[100]["order"], 0)
+        self.assertEqual(chats[300]["order"], 1)
 
     def test_filter_chat_items_search_and_filter(self):
         from utils.chat_selector import ChatListItem, ChatSelector

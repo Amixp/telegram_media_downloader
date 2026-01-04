@@ -709,14 +709,14 @@ async def main_async():
     # Проверить, есть ли сохраненные чаты в конфиге
     selected_chats = []
     if "chats" in config and isinstance(config["chats"], list):
-        enabled_chats = [
-            (c["chat_id"], c.get("title", ""), "saved")
-            for c in config["chats"]
-            if c.get("enabled", True) and "chat_id" in c
-        ]
-        preselected_ids: Set[int] = {
-            c["chat_id"] for c in config["chats"] if c.get("enabled", True) and "chat_id" in c
-        }
+        enabled_entries = [c for c in config["chats"] if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c]
+        # Если есть order хотя бы у одного — сортируем очередь по нему, иначе сохраняем порядок из YAML
+        if any("order" in c for c in enabled_entries):
+            enabled_entries.sort(key=lambda c: int(c.get("order", 10**9)) if str(c.get("order", "")).lstrip("-").isdigit() else 10**9)
+
+        enabled_chats = [(c["chat_id"], c.get("title", ""), "saved") for c in enabled_entries]
+        preselected_ids: Set[int] = {c["chat_id"] for c in enabled_entries}
+        preselected_order: List[int] = [c["chat_id"] for c in enabled_entries]
 
         if enabled_chats and not config.get("interactive_chat_selection", True):
             selected_chats = enabled_chats
@@ -729,6 +729,7 @@ async def main_async():
                     allow_multiple=True,
                     ui=chat_selection_ui,
                     preselected_chat_ids=preselected_ids,
+                    preselected_chat_id_order=preselected_order,
                 )
             else:
                 selected_chats = enabled_chats
@@ -737,6 +738,7 @@ async def main_async():
                 allow_multiple=True,
                 ui=chat_selection_ui,
                 preselected_chat_ids=preselected_ids,
+                preselected_chat_id_order=preselected_order,
             )
     elif config.get("chat_id"):
         # Старая структура - один чат
@@ -762,7 +764,18 @@ async def main_async():
     download_manager = DownloadManager(config_manager)
     pagination_limit = config.get("download_settings", {}).get("pagination_limit", 100)
 
-    for chat_id, chat_title, _ in selected_chats:
+    # Очередь загрузки: берём из конфига (с учётом order), чтобы порядок был стабильным и редактируемым
+    cfg_after = config_manager.config
+    queue_entries = [
+        c for c in cfg_after.get("chats", [])
+        if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c
+    ]
+    if any("order" in c for c in queue_entries):
+        queue_entries.sort(key=lambda c: int(c.get("order", 10**9)) if str(c.get("order", "")).lstrip("-").isdigit() else 10**9)
+
+    for c in queue_entries:
+        chat_id = c["chat_id"]
+        chat_title = c.get("title", "")
         logger.info(f"Начало загрузки для чата: {chat_title or chat_id}")
         # Временно установить chat_id для этого чата
         download_manager.config["chat_id"] = chat_id

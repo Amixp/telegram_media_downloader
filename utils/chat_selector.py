@@ -7,6 +7,7 @@ import logging
 import sys
 import textwrap
 import time
+import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -88,9 +89,11 @@ class ChatSelector:
         "text": {
             "header": (
                 "Выбор чатов: ↑/↓ PgUp/PgDn Home/End | Space=выбрать | "
-                "Enter=OK | f=фильтр | /=поиск по имени | c=очистить | q/Esc=выход"
+                "Enter=OK | f=фильтр | /=поиск по имени | c=очистить | "
+                "v=только выбранные | J/K=порядок очереди | q/Esc=выход"
             ),
             "no_chats": "Нет доступных чатов",
+            "no_selected": "Нет выбранных чатов",
             "search_prompt": "Поиск по имени: ",
         },
         "keys": {
@@ -100,12 +103,16 @@ class ChatSelector:
             "filter": ["f"],
             "search": ["/"],
             "clear": ["c"],
+            "show_selected": ["v"],
             "up": ["up", "k"],
             "down": ["down", "j"],
             "page_up": ["pageup"],
             "page_down": ["pagedown"],
             "home": ["home"],
             "end": ["end"],
+            # Редактирование очереди (только для выбранных чатов)
+            "move_up": ["K"],
+            "move_down": ["J"],
         },
     }
 
@@ -508,6 +515,7 @@ class ChatSelector:
         self,
         items: Sequence[ChatListItem],
         preselected_chat_ids: Optional[Set[int]] = None,
+        preselected_chat_id_order: Optional[Sequence[int]] = None,
     ) -> List[Tuple[int, str, str]]:
         """
         TUI выбор чатов: навигация клавишами + пробел для выбора.
@@ -524,6 +532,8 @@ class ChatSelector:
             Список чатов.
         preselected_chat_ids: Optional[Set[int]]
             Предварительно выбранные chat_id (например из config.yaml).
+        preselected_chat_id_order: Optional[Sequence[int]]
+            Предварительно выбранные chat_id в порядке очереди (например из config.yaml).
 
         Returns
         -------
@@ -613,6 +623,32 @@ class ChatSelector:
             tui_file_handler = None
 
         selected: Set[int] = set(preselected_chat_ids or set())
+        # Порядок очереди: сохраняем как список chat_id
+        selected_order: List[int] = []
+        if preselected_chat_id_order:
+            for cid in preselected_chat_id_order:
+                if cid in selected and cid not in selected_order:
+                    selected_order.append(cid)
+        # Дособрать порядок из items (стабильно), если не все preselected были в order
+        if selected:
+            for it0 in items:
+                if it0.chat_id in selected and it0.chat_id not in selected_order:
+                    selected_order.append(it0.chat_id)
+
+        show_selected_only = False
+        by_id: Dict[int, ChatListItem] = {i.chat_id: i for i in items}
+
+        def _visible_items() -> List[ChatListItem]:
+            if show_selected_only:
+                out: List[ChatListItem] = []
+                for cid in selected_order:
+                    if cid not in selected:
+                        continue
+                    it = by_id.get(cid)
+                    if it is not None:
+                        out.append(it)
+                return out
+            return self.filter_chat_items(items, filter_mode=filter_mode, search_query=search_query)
         filter_mode = "all"
         search_query = ""
         index = 0
@@ -630,12 +666,136 @@ class ChatSelector:
                 "users": "пользователи",
             }.get(mode, mode)
 
+        def _ch_width(ch: str) -> int:
+            if not ch:
+                return 0
+            # Combining marks не занимают места
+            if unicodedata.combining(ch):
+                return 0
+            # Управляющие/непечатные — считаем нулевой ширины
+            cat = unicodedata.category(ch)
+            if cat in ("Cc", "Cf"):
+                return 0
+            # East Asian wide/fullwidth обычно занимают 2 колонки
+            if unicodedata.east_asian_width(ch) in ("W", "F"):
+                return 2
+            return 1
+
+        def _wcswidth(text: str) -> int:
+            total = 0
+            for ch in text:
+                total += _ch_width(ch)
+            return total
+
+        def _wrap_lines_display(s: str, width: int) -> List[str]:
+            """
+            Перенос строки по ширине экрана (в колонках терминала), учитывая wide Unicode.
+
+            В отличие от textwrap.wrap(), здесь ширина считается в "колонках", чтобы
+            curses не переносил хвост строки на следующую строку в колонку 0.
+            """
+            if width <= 1:
+                return [""]
+            text = (s or "").strip()
+            if not text:
+                return [""]
+
+            def _flush_line(buf: List[str]) -> str:
+                # убрать пробелы по краям, чтобы не генерить пустые "хвосты"
+                return "".join(buf).strip()
+
+            out: List[str] = []
+            line: List[str] = []
+            line_w = 0
+
+            # word-wrap: переносим по пробелам, длинные слова дробим по символам
+            words = text.split(" ")
+            for wi, word in enumerate(words):
+                if wi > 0:
+                    sep = " "
+                    sep_w = 1
+                else:
+                    sep = ""
+                    sep_w = 0
+
+                word_w = _wcswidth(word)
+
+                # Если слово целиком не помещается даже в пустую строку — дробим
+                if word_w > width:
+                    if line:
+                        out.append(_flush_line(line))
+                        line = []
+                        line_w = 0
+                    chunk: List[str] = []
+                    chunk_w = 0
+                    for ch in word:
+                        cw = _ch_width(ch)
+                        if chunk_w + cw > width and chunk:
+                            out.append(_flush_line(chunk))
+                            chunk = []
+                            chunk_w = 0
+                        chunk.append(ch)
+                        chunk_w += cw
+                    if chunk:
+                        out.append(_flush_line(chunk))
+                    continue
+
+                # Пробуем добавить слово (и пробел перед ним, если нужно)
+                needed = sep_w + word_w
+                if line and (line_w + needed) > width:
+                    out.append(_flush_line(line))
+                    line = []
+                    line_w = 0
+                    sep = ""
+                    sep_w = 0
+                    needed = word_w
+
+                if sep:
+                    line.append(sep)
+                    line_w += sep_w
+                line.append(word)
+                line_w += word_w
+
+            if line:
+                out.append(_flush_line(line))
+            return out or [""]
+
         def _truncate(s: str, width: int) -> str:
+            """
+            Обрезать строку по ширине экрана (в колонках терминала), а не по len().
+
+            Это важно из‑за wide Unicode (эмодзи, CJK): иначе curses может перенести
+            хвост строки на следующую строку в колонку 0, «залезая» в левую панель.
+            """
             if width <= 1:
                 return ""
-            if len(s) <= width:
+
+            if _wcswidth(s) <= width:
                 return s
-            return s[: max(0, width - 1)] + "…"
+
+            ell = "…"
+            target = max(0, width - 1)
+            out: List[str] = []
+            cur = 0
+            for ch in s:
+                w = _ch_width(ch)
+                if cur + w > target:
+                    break
+                out.append(ch)
+                cur += w
+            return "".join(out) + ell
+
+        def _addstr_safe(stdscr, y: int, x: int, s: str, max_cols: int, attr: int = 0) -> None:  # noqa: ANN001
+            """
+            Безопасно вывести строку, гарантируя что она не выйдет за границы экрана.
+            """
+            if max_cols <= 0:
+                return
+            try:
+                stdscr.addstr(y, x, _truncate(s, max_cols), attr)
+            except Exception:
+                # curses.error и любые проблемы рендера не должны падать
+                return
 
         def _as_int(v: Any, default: int, *, min_value: int = 0, max_value: Optional[int] = None) -> int:
             try:
@@ -675,8 +835,7 @@ class ChatSelector:
                 return [""]
             if not s:
                 return [""]
-            # textwrap работает по "символам", не по wcwidth, но для UI превью это приемлемо.
-            return textwrap.wrap(s, width=width, replace_whitespace=True, drop_whitespace=True) or [""]
+            return _wrap_lines_display(s, width)
 
         preview_messages_count = _as_int(preview_cfg.get("messages_count", 1), 1, min_value=1, max_value=100)
         fetch_mode_raw = str(preview_cfg.get("fetch_mode", "auto")).strip().lower()
@@ -710,12 +869,26 @@ class ChatSelector:
             stdscr.addstr(y, 0, _truncate(text, max(0, width - 1)))
             stdscr.refresh()
 
+            # Важно: основное окно работает в non-blocking режиме (nodelay/timeout(0)).
+            # Для ввода строки нужно временно перейти в blocking режим, иначе getstr()
+            # может "мгновенно" вернуть пустую строку и промпт будет мигать.
+            try:
+                stdscr.nodelay(False)
+                stdscr.timeout(-1)
+            except Exception:
+                pass
+
             curses.echo()
             try:
                 stdscr.move(y, min(len(prompt) + len(initial), max(0, width - 2)))
                 raw = stdscr.getstr(y, len(prompt), max(0, width - len(prompt) - 1))
             finally:
                 curses.noecho()
+                try:
+                    stdscr.nodelay(True)
+                    stdscr.timeout(0)
+                except Exception:
+                    pass
             try:
                 return raw.decode("utf-8")
             except Exception:
@@ -786,12 +959,15 @@ class ChatSelector:
             "filter": _parse_key_spec(keys_cfg.get("filter", self._DEFAULT_TUI_CONFIG["keys"]["filter"])),
             "search": _parse_key_spec(keys_cfg.get("search", self._DEFAULT_TUI_CONFIG["keys"]["search"])),
             "clear": _parse_key_spec(keys_cfg.get("clear", self._DEFAULT_TUI_CONFIG["keys"]["clear"])),
+            "show_selected": _parse_key_spec(keys_cfg.get("show_selected", self._DEFAULT_TUI_CONFIG["keys"]["show_selected"])),
             "up": _parse_key_spec(keys_cfg.get("up", self._DEFAULT_TUI_CONFIG["keys"]["up"])),
             "down": _parse_key_spec(keys_cfg.get("down", self._DEFAULT_TUI_CONFIG["keys"]["down"])),
             "page_up": _parse_key_spec(keys_cfg.get("page_up", self._DEFAULT_TUI_CONFIG["keys"]["page_up"])),
             "page_down": _parse_key_spec(keys_cfg.get("page_down", self._DEFAULT_TUI_CONFIG["keys"]["page_down"])),
             "home": _parse_key_spec(keys_cfg.get("home", self._DEFAULT_TUI_CONFIG["keys"]["home"])),
             "end": _parse_key_spec(keys_cfg.get("end", self._DEFAULT_TUI_CONFIG["keys"]["end"])),
+            "move_up": _parse_key_spec(keys_cfg.get("move_up", self._DEFAULT_TUI_CONFIG["keys"]["move_up"])),
+            "move_down": _parse_key_spec(keys_cfg.get("move_down", self._DEFAULT_TUI_CONFIG["keys"]["move_down"])),
         }
 
         async def _fetch_preview(chat_id: int, limit: int) -> List[str]:
@@ -887,23 +1063,39 @@ class ChatSelector:
                         inflight = None
                         inflight_chat_id = None
 
-                filtered_items = self.filter_chat_items(
-                    items, filter_mode=filter_mode, search_query=search_query
-                )
+                filtered_items = _visible_items()
                 stdscr.erase()
                 height, width = stdscr.getmaxyx()
 
                 header = str(text_cfg.get("header", self._DEFAULT_TUI_CONFIG["text"]["header"]))
-                stdscr.addstr(0, 0, _truncate(header, max(0, width - 1)), header_attr)
+                _addstr_safe(stdscr, 0, 0, header, max(0, width - 1), header_attr)
 
                 if not filtered_items:
-                    stdscr.addstr(2, 0, str(text_cfg.get("no_chats", self._DEFAULT_TUI_CONFIG["text"]["no_chats"])))
-                    meta0 = f"Фильтр: {_filter_label(filter_mode)} | Поиск: {search_query or '—'}"
-                    stdscr.addstr(3, 0, _truncate(meta0, max(0, width - 1)))
+                    empty_msg = (
+                        str(text_cfg.get("no_selected", self._DEFAULT_TUI_CONFIG["text"]["no_selected"]))
+                        if show_selected_only
+                        else str(text_cfg.get("no_chats", self._DEFAULT_TUI_CONFIG["text"]["no_chats"]))
+                    )
+                    _addstr_safe(
+                        stdscr,
+                        2,
+                        0,
+                        empty_msg,
+                        max(0, width - 1),
+                    )
+                    meta0 = (
+                        f"Режим: {'выбранные' if show_selected_only else 'все'} | "
+                        f"Фильтр: {_filter_label(filter_mode)} | Поиск: {search_query or '—'}"
+                    )
+                    _addstr_safe(stdscr, 3, 0, meta0, max(0, width - 1))
                     stdscr.refresh()
                     k0 = stdscr.getch()
                     if k0 in keymap["quit"] or k0 in keymap["confirm"]:
                         return []
+                    if k0 in keymap["show_selected"]:
+                        show_selected_only = not show_selected_only
+                        index = 0
+                        offset = 0
                     if k0 in keymap["filter"]:
                         filter_mode = {
                             "all": "groups_channels",
@@ -966,23 +1158,28 @@ class ChatSelector:
                         inflight = asyncio.create_task(_fetch_preview(cur.chat_id, preview_messages_count))
 
                 # Рендер списка
+                selected_pos: Dict[int, int] = {cid: (idx_o + 1) for idx_o, cid in enumerate(selected_order)}
                 for row in range(list_h):
                     i = offset + row
                     if i >= len(filtered_items):
                         break
                     it = filtered_items[i]
-                    mark = "[x]" if it.chat_id in selected else "[ ]"
+                    if it.chat_id in selected_pos:
+                        pos = selected_pos[it.chat_id]
+                        mark = f"[{pos:02d}]" if pos <= 99 else "[**]"
+                    else:
+                        mark = "[  ]"
                     chat_id_suffix = f" ({it.chat_id})" if show_chat_id else ""
                     line = f"{mark} {_type_label(it.chat_type)} {it.title}{chat_id_suffix}"
                     if i == index:
                         attr = selected_attr if selected_attr is not None else (curses.A_REVERSE | list_attr)
                     else:
                         attr = list_attr
-                    stdscr.addstr(1 + row, 0, _truncate(line, list_w - 1), attr)
+                    _addstr_safe(stdscr, 1 + row, 0, line, max(0, list_w - 1), attr)
 
                 # Рендер превью
                 if preview_w >= preview_min_width:
-                    stdscr.addstr(1, list_w, "│", sep_attr)
+                    _addstr_safe(stdscr, 1, list_w, "│", 1, sep_attr)
 
                     header_lines: List[str] = [f"{_type_label(cur.chat_type)} {cur.title}"]
                     if show_chat_id:
@@ -1045,80 +1242,104 @@ class ChatSelector:
                         if y >= height:
                             break
                         attr_line = curses.A_BOLD if idx_line == 0 else curses.A_NORMAL
-                        stdscr.addstr(y, list_w + 1, _truncate(part, preview_w - 2), attr_line)
+                        # Чтобы curses не переносил wide‑символы в колонку 0 следующей строки,
+                        # оставляем небольшой запас (−1 колонка).
+                        _addstr_safe(stdscr, y, list_w + 1, part, max(0, preview_w - 3), attr_line)
                         y += 1
 
                 meta = (
+                    f"Режим: {'выбранные' if show_selected_only else 'все'} | "
                     f"Фильтр: {_filter_label(filter_mode)} | "
                     f"Поиск: {search_query or '—'} | "
                     f"Показано: {len(filtered_items)}/{len(items)} | "
                     f"Выбрано: {len(selected)}"
                 )
                 if height > 1:
-                    stdscr.addstr(height - 1, 0, _truncate(meta, max(0, width - 1)), footer_attr)
+                    _addstr_safe(stdscr, height - 1, 0, meta, max(0, width - 1), footer_attr)
 
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key == -1:
-                    await asyncio.sleep(poll_interval_s)
-                    continue
+                if key != -1:
+                    if key in keymap["quit"]:
+                        return []
+                    if key in keymap["confirm"]:
+                        break
+                    if key in keymap["show_selected"]:
+                        show_selected_only = not show_selected_only
+                        index = 0
+                        offset = 0
+                    if key in keymap["toggle"]:
+                        cid = filtered_items[index].chat_id
+                        if cid in selected:
+                            selected.remove(cid)
+                            try:
+                                selected_order.remove(cid)
+                            except ValueError:
+                                pass
+                        else:
+                            selected.add(cid)
+                            selected_order.append(cid)
+                    elif key in keymap["move_up"]:
+                        cid = filtered_items[index].chat_id
+                        if cid in selected:
+                            try:
+                                p = selected_order.index(cid)
+                            except ValueError:
+                                p = -1
+                            if p > 0:
+                                selected_order[p - 1], selected_order[p] = selected_order[p], selected_order[p - 1]
+                    elif key in keymap["move_down"]:
+                        cid = filtered_items[index].chat_id
+                        if cid in selected:
+                            try:
+                                p = selected_order.index(cid)
+                            except ValueError:
+                                p = -1
+                            if 0 <= p < (len(selected_order) - 1):
+                                selected_order[p + 1], selected_order[p] = selected_order[p], selected_order[p + 1]
+                    elif key in keymap["clear"]:
+                        search_query = ""
+                        index = 0
+                        offset = 0
+                    elif key in keymap["search"]:
+                        search_query = _prompt_input(
+                            stdscr,
+                            str(
+                                text_cfg.get(
+                                    "search_prompt",
+                                    self._DEFAULT_TUI_CONFIG["text"]["search_prompt"],
+                                )
+                            ),
+                            initial=search_query,
+                        ).strip()
+                        index = 0
+                        offset = 0
+                    elif key in keymap["filter"]:
+                        filter_mode = {
+                            "all": "groups_channels",
+                            "groups_channels": "channels",
+                            "channels": "groups",
+                            "groups": "users",
+                            "users": "all",
+                        }.get(filter_mode, "all")
+                        index = 0
+                        offset = 0
+                    elif key in keymap["up"]:
+                        index = max(0, index - 1)
+                    elif key in keymap["down"]:
+                        index = min(len(filtered_items) - 1, index + 1)
+                    elif key in keymap["page_up"]:
+                        index = max(0, index - max(1, list_h))
+                    elif key in keymap["page_down"]:
+                        index = min(len(filtered_items) - 1, index + max(1, list_h))
+                    elif key in keymap["home"]:
+                        index = 0
+                    elif key in keymap["end"]:
+                        index = len(filtered_items) - 1
 
-                if key in keymap["quit"]:
-                    return []
-                if key in keymap["confirm"]:
-                    break
-                if key in keymap["toggle"]:
-                    cid = filtered_items[index].chat_id
-                    if cid in selected:
-                        selected.remove(cid)
-                    else:
-                        selected.add(cid)
-                    continue
-                if key in keymap["clear"]:
-                    search_query = ""
-                    index = 0
-                    offset = 0
-                    continue
-                if key in keymap["search"]:
-                    search_query = _prompt_input(
-                        stdscr,
-                        str(
-                            text_cfg.get(
-                                "search_prompt",
-                                self._DEFAULT_TUI_CONFIG["text"]["search_prompt"],
-                            )
-                        ),
-                        initial=search_query,
-                    ).strip()
-                    index = 0
-                    offset = 0
-                    continue
-                if key in keymap["filter"]:
-                    filter_mode = {
-                        "all": "groups_channels",
-                        "groups_channels": "channels",
-                        "channels": "groups",
-                        "groups": "users",
-                        "users": "all",
-                    }.get(filter_mode, "all")
-                    index = 0
-                    offset = 0
-                    continue
-
-                if key in keymap["up"]:
-                    index = max(0, index - 1)
-                elif key in keymap["down"]:
-                    index = min(len(filtered_items) - 1, index + 1)
-                elif key in keymap["page_up"]:
-                    index = max(0, index - max(1, list_h))
-                elif key in keymap["page_down"]:
-                    index = min(len(filtered_items) - 1, index + max(1, list_h))
-                elif key in keymap["home"]:
-                    index = 0
-                elif key in keymap["end"]:
-                    index = len(filtered_items) - 1
-                await asyncio.sleep(0)
+                # Ограничить частоту перерисовки, чтобы UI не "мигал" на быстрых повторах клавиш
+                await asyncio.sleep(poll_interval_s)
         finally:
             if inflight is not None and not inflight.done():
                 inflight.cancel()
@@ -1161,14 +1382,29 @@ class ChatSelector:
             except Exception:
                 pass
 
-        selected_items = [i for i in items if i.chat_id in selected]
-        return [(i.chat_id, i.title, i.chat_type) for i in selected_items]
+        by_id: Dict[int, ChatListItem] = {i.chat_id: i for i in items}
+        out: List[Tuple[int, str, str]] = []
+        used: Set[int] = set()
+        for cid in selected_order:
+            it = by_id.get(cid)
+            if it is None:
+                continue
+            if cid not in selected:
+                continue
+            out.append((it.chat_id, it.title, it.chat_type))
+            used.add(cid)
+        # На всякий случай добавить выбранные, которые почему-то не попали в order
+        for it in items:
+            if it.chat_id in selected and it.chat_id not in used:
+                out.append((it.chat_id, it.title, it.chat_type))
+        return out
 
     async def select_chats(
         self,
         allow_multiple: bool = True,
         ui: str = "classic",
         preselected_chat_ids: Optional[Set[int]] = None,
+        preselected_chat_id_order: Optional[Sequence[int]] = None,
     ) -> List[Tuple[int, str, str]]:
         """
         Получить и выбрать чаты.
@@ -1181,6 +1417,8 @@ class ChatSelector:
             Интерфейс выбора: "classic" (текущий) или "tui" (клавиатурный).
         preselected_chat_ids: Optional[Set[int]]
             Предварительно выбранные chat_id (например из config.yaml).
+        preselected_chat_id_order: Optional[Sequence[int]]
+            Предварительно выбранные chat_id в порядке очереди (например из config.yaml).
 
         Returns
         -------
@@ -1191,7 +1429,7 @@ class ChatSelector:
         if ui == "tui":
             items = await self.get_available_chat_items()
             if allow_multiple:
-                return await self._select_chats_tui(items, preselected_chat_ids)
+                return await self._select_chats_tui(items, preselected_chat_ids, preselected_chat_id_order)
             chats = [(i.chat_id, i.title, i.chat_type) for i in items]
         else:
             chats = await self.get_available_chats()

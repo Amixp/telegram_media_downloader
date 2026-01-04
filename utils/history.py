@@ -2,8 +2,8 @@
 import html
 import json
 import os
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from telethon.tl.types import Message, MessageMediaDocument, MessageMediaPhoto
 
@@ -35,6 +35,7 @@ class MessageHistory:
         self.history_path = os.path.join(base_directory, history_directory)
         os.makedirs(self.history_path, exist_ok=True)
         self.chats_info: Dict[int, Dict[str, Any]] = {}  # Информация о чатах для индекса
+        self._index_manifest_file = os.path.join(self.history_path, "index.json")
 
     def save_message(
         self,
@@ -1012,27 +1013,99 @@ class MessageHistory:
         return icons.get(media_type, "📎")
 
     def _generate_index_html(self) -> None:
-        """Сгенерировать индексный HTML файл со списком всех чатов."""
-        # Сначала генерируем HTML для всех чатов
+        """Сгенерировать индексный HTML файл со списком всех чатов (без потери истории)."""
+        # 1) Обновить/сгенерировать HTML только для чатов текущего запуска
         for chat_id in self.chats_info.keys():
             self._generate_chat_html(chat_id)
 
+        # 2) Загрузить манифест индекса из прошлого (если есть) и обновить его
+        manifest = self._load_index_manifest()
+
+        # 2a) Обновить записи чатов, которые были в этом запуске
+        for chat_id, info in self.chats_info.items():
+            seeded_from_jsonl = False
+            # Если манифеста ещё нет (первый запуск с этой фичей) — инициализируем из JSONL, если он есть
+            if chat_id not in manifest:
+                seeded = self._try_get_chat_meta_from_jsonl(chat_id)
+                if seeded is not None:
+                    title, message_count, last_message_date = seeded
+                    manifest[chat_id] = {
+                        "title": title,
+                        "message_count": message_count,
+                        "last_message_date": last_message_date.isoformat() if last_message_date else None,
+                    }
+                    seeded_from_jsonl = True
+                else:
+                    manifest[chat_id] = {
+                        "title": info.get("title") or f"Chat {chat_id}",
+                        "message_count": 0,
+                        "last_message_date": None,
+                    }
+
+            # Учитываем инкремент текущего запуска:
+            # - если запись была "посеяна" из JSONL в этом же вызове, count уже включает новые сообщения (файл уже дописан)
+            # - иначе добавляем дельту к предыдущему total из манифеста
+            if not seeded_from_jsonl:
+                manifest[chat_id]["message_count"] = int(manifest[chat_id].get("message_count") or 0) + int(
+                    info.get("message_count") or 0
+                )
+
+            # Обновить title
+            if info.get("title"):
+                manifest[chat_id]["title"] = info["title"]
+
+            # Обновить дату последнего сообщения (берём max)
+            new_last = info.get("last_message_date")
+            old_last = self._parse_iso_dt(manifest[chat_id].get("last_message_date"))
+            last = self._max_dt(old_last, new_last)
+            manifest[chat_id]["last_message_date"] = last.isoformat() if last else manifest[chat_id].get("last_message_date")
+
+        # 2b) Подтянуть чаты, которые уже есть в архиве (chat_*.jsonl), но не фигурируют в текущем запуске
+        for chat_id in self._list_chat_ids_from_jsonl():
+            if chat_id in manifest:
+                continue
+            meta = self._try_get_chat_meta_from_jsonl(chat_id)
+            if meta is None:
+                continue
+            title, message_count, last_message_date = meta
+            manifest[chat_id] = {
+                "title": title,
+                "message_count": message_count,
+                "last_message_date": last_message_date.isoformat() if last_message_date else None,
+            }
+
+        # 3) Сохранить манифест (чтобы следующий запуск не сканировал архив заново)
+        self._save_index_manifest(manifest)
+
+        # 4) Построить index.html на основе манифеста (включая старые чаты)
         index_file = os.path.join(self.history_path, "index.html")
 
         chats_html = ""
-        for chat_id, info in sorted(self.chats_info.items(),
-                                    key=lambda x: x[1].get("last_message_date") or datetime.min,
-                                    reverse=True):
-            title = info["title"]
-            count = info["message_count"]
-            last_date = info.get("last_message_date")
+        items: List[Tuple[int, Dict[str, Any]]] = list(manifest.items())
+        items.sort(key=lambda x: self._dt_sort_ts(self._parse_iso_dt(x[1].get("last_message_date"))), reverse=True)
+
+        for chat_id, info in items:
+            title = str(info.get("title") or f"Chat {chat_id}")
+            count = int(info.get("message_count") or 0)
+            last_date = self._parse_iso_dt(info.get("last_message_date"))
             date_str = last_date.strftime("%d.%m.%Y %H:%M") if last_date else "Неизвестно"
 
             # Получить первую букву для аватара
             first_letter = title[0].upper() if title else "?"
 
+            # Если HTML для чата отсутствует — всё равно показываем карточку, но без клика
+            chat_href = f"chat_{chat_id}.html"
+            chat_html_path = os.path.join(self.history_path, chat_href)
+            has_html = os.path.exists(chat_html_path)
+            open_tag = (
+                f'<a href="{chat_href}" class="chat-card">'
+                if has_html
+                else '<div class="chat-card" style="cursor: default; opacity: 0.7;">'
+            )
+            close_tag = "</a>" if has_html else "</div>"
+
             chats_html += f"""
-            <a href="chat_{chat_id}.html" class="chat-card">
+            {open_tag}
                 <div class="chat-avatar">{first_letter}</div>
                 <div class="chat-name">{html.escape(title)}</div>
                 <div class="chat-info">
@@ -1045,7 +1118,7 @@ class MessageHistory:
                         <span>{count} сообщений</span>
                     </div>
                 </div>
-            </a>
+            {close_tag}
             """
 
         html_content = f"""<!DOCTYPE html>
@@ -1256,3 +1329,145 @@ class MessageHistory:
 
         with open(index_file, "w", encoding="utf-8") as f:
             f.write(html_content)
+
+    def _chat_jsonl_exists(self, chat_id: int) -> bool:
+        """Проверить, существует ли JSONL файл чата."""
+        return os.path.exists(os.path.join(self.history_path, f"chat_{chat_id}.jsonl"))
+
+    def _load_index_manifest(self) -> Dict[int, Dict[str, Any]]:
+        """Загрузить манифест индекса (index.json) из истории."""
+        if not os.path.exists(self._index_manifest_file):
+            return {}
+        try:
+            with open(self._index_manifest_file, "r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+        except Exception:
+            return {}
+
+        manifest: Dict[int, Dict[str, Any]] = {}
+        # Ключи в JSON — строки, приводим к int
+        for k, v in raw.items():
+            try:
+                chat_id = int(k)
+            except Exception:
+                continue
+            if isinstance(v, dict):
+                manifest[chat_id] = v
+        return manifest
+
+    def _save_index_manifest(self, manifest: Dict[int, Dict[str, Any]]) -> None:
+        """Сохранить манифест индекса (index.json) в истории."""
+        raw: Dict[str, Dict[str, Any]] = {str(chat_id): info for chat_id, info in manifest.items()}
+        try:
+            with open(self._index_manifest_file, "w", encoding="utf-8") as f:
+                json.dump(raw, f, ensure_ascii=False, indent=2)
+        except Exception:
+            # Индекс HTML всё равно сгенерируем; манифест — оптимизация
+            pass
+
+    def _list_chat_ids_from_jsonl(self) -> List[int]:
+        """Вернуть список chat_id, найденных в истории по chat_*.jsonl."""
+        chat_ids: List[int] = []
+        try:
+            for name in os.listdir(self.history_path):
+                if not (name.startswith("chat_") and name.endswith(".jsonl")):
+                    continue
+                middle = name[len("chat_") : -len(".jsonl")]
+                try:
+                    chat_ids.append(int(middle))
+                except Exception:
+                    continue
+        except Exception:
+            return []
+        return chat_ids
+
+    def _try_get_chat_meta_from_jsonl(self, chat_id: int) -> Optional[Tuple[str, int, Optional[datetime]]]:
+        """
+        Попытаться получить метаданные чата из chat_{chat_id}.jsonl.
+
+        Возвращает (title, message_count, last_message_date).
+        """
+        jsonl_path = os.path.join(self.history_path, f"chat_{chat_id}.jsonl")
+        if not os.path.exists(jsonl_path):
+            return None
+
+        title: str = f"Chat {chat_id}"
+        message_count = 0
+        first_line: Optional[str] = None
+        last_line: Optional[str] = None
+
+        try:
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if first_line is None:
+                        first_line = line
+                    last_line = line
+                    message_count += 1
+        except Exception:
+            return None
+
+        def _safe_parse_title(line: Optional[str]) -> Optional[str]:
+            if not line:
+                return None
+            try:
+                obj = json.loads(line)
+            except Exception:
+                return None
+            if isinstance(obj, dict):
+                t = obj.get("chat_title") or obj.get("title")
+                if isinstance(t, str) and t.strip():
+                    return t.strip()
+            return None
+
+        parsed_title = _safe_parse_title(first_line) or _safe_parse_title(last_line)
+        if parsed_title:
+            title = parsed_title
+
+        last_message_date: Optional[datetime] = None
+        if last_line:
+            try:
+                obj = json.loads(last_line)
+                if isinstance(obj, dict) and obj.get("date"):
+                    last_message_date = datetime.fromisoformat(str(obj["date"]))
+            except Exception:
+                last_message_date = None
+
+        return title, message_count, last_message_date
+
+    def _parse_iso_dt(self, value: Any) -> Optional[datetime]:
+        """Безопасно распарсить ISO datetime."""
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(str(value))
+        except Exception:
+            return None
+
+    def _max_dt(self, a: Optional[datetime], b: Optional[datetime]) -> Optional[datetime]:
+        """max(a, b) для Optional[datetime]."""
+        if a is None:
+            return b
+        if b is None:
+            return a
+        try:
+            return a if a >= b else b
+        except TypeError:
+            # aware vs naive: сравниваем по timestamp в UTC
+            return a if self._dt_sort_ts(a) >= self._dt_sort_ts(b) else b
+
+    def _dt_sort_ts(self, dt: Optional[datetime]) -> float:
+        """Стабильный sort-key для datetime (не падает на aware/naive)."""
+        if dt is None:
+            return float("-inf")
+        try:
+            if dt.tzinfo is None:
+                # считаем, что naive — это локальная "как есть"; приводим к UTC через предположение "UTC"
+                return dt.replace(tzinfo=timezone.utc).timestamp()
+            return dt.timestamp()
+        except Exception:
+            return float("-inf")
