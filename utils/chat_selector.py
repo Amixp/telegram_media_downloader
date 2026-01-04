@@ -1334,6 +1334,9 @@ class ChatSelector:
                                 p = -1
                             if p > 0:
                                 selected_order[p - 1], selected_order[p] = selected_order[p], selected_order[p - 1]
+                                # В режиме "только выбранные" курсор должен ехать вместе с чатом
+                                if show_selected_only:
+                                    index = p - 1
                     elif key in keymap["move_down"]:
                         cid = filtered_items[index].chat_id
                         if cid in selected:
@@ -1343,6 +1346,9 @@ class ChatSelector:
                                 p = -1
                             if 0 <= p < (len(selected_order) - 1):
                                 selected_order[p + 1], selected_order[p] = selected_order[p], selected_order[p + 1]
+                                # В режиме "только выбранные" курсор должен ехать вместе с чатом
+                                if show_selected_only:
+                                    index = p + 1
                     elif key in keymap["clear"]:
                         search_query = ""
                         index = 0
