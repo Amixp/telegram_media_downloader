@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import sys
 import textwrap
 import time
 from collections import OrderedDict
@@ -545,6 +547,71 @@ class ChatSelector:
         keys_cfg = tui_cfg.get("keys", {})
         show_chat_id = display_cfg.get("show_chat_id", True) is True
 
+        # Важно: любые выводы в stdout/stderr или StreamHandler'ы логгера во время curses
+        # могут "сломать" экран (пропадает заголовок/подвал, всё плывёт).
+        # Поэтому на время TUI перехватываем вывод в файл и отключаем вывод в терминал,
+        # не теряя при этом отладочную информацию.
+        class _TuiStreamCapture:  # pylint: disable=too-few-public-methods
+            def __init__(self, file_obj):  # noqa: ANN001
+                self._f = file_obj
+
+            def write(self, s: Any) -> int:
+                try:
+                    text = s if isinstance(s, str) else str(s)
+                except Exception:
+                    text = "<unprintable>"
+                try:
+                    self._f.write(text)
+                    self._f.flush()
+                except Exception:
+                    # Ничего не делаем: нельзя падать из-за логов
+                    return 0
+                return len(text)
+
+            def flush(self) -> None:
+                try:
+                    self._f.flush()
+                except Exception:
+                    pass
+
+            def isatty(self) -> bool:
+                return False
+
+        log_path = "tui-debug.log"
+        root_logger = logging.getLogger()
+        saved_handlers = list(root_logger.handlers)
+        saved_root_level = root_logger.level
+        saved_stdout = sys.stdout
+        saved_stderr = sys.stderr
+        tui_log_file = None
+        tui_file_handler: Optional[logging.Handler] = None
+        try:
+            tui_log_file = open(log_path, "a", encoding="utf-8")  # noqa: PTH123
+            sys.stdout = _TuiStreamCapture(tui_log_file)  # type: ignore[assignment]
+            sys.stderr = _TuiStreamCapture(tui_log_file)  # type: ignore[assignment]
+
+            # Убрать вывод в терминал (RichHandler/StreamHandler), оставив файл.
+            for h in list(root_logger.handlers):
+                if isinstance(h, logging.StreamHandler):
+                    root_logger.removeHandler(h)
+
+            tui_file_handler = logging.FileHandler(log_path, encoding="utf-8")
+            tui_file_handler.setLevel(logging.DEBUG)
+            tui_file_handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+            root_logger.addHandler(tui_file_handler)
+            if root_logger.level > logging.DEBUG:
+                root_logger.setLevel(logging.DEBUG)
+        except Exception:
+            # Если что-то пошло не так — лучше продолжить TUI без перехвата,
+            # чем падать на этапе выбора чатов.
+            tui_log_file = None
+            tui_file_handler = None
+
         selected: Set[int] = set(preselected_chat_ids or set())
         filter_mode = "all"
         search_query = ""
@@ -743,6 +810,7 @@ class ChatSelector:
         inflight: Optional[asyncio.Task[List[str]]] = None
         inflight_chat_id: Optional[int] = None
         last_fetch_error: Optional[str] = None
+        last_fetch_error_chat_id: Optional[int] = None
         cursor_changed_at = time.monotonic()
         last_cursor_chat_id: Optional[int] = None
 
@@ -811,8 +879,10 @@ class ChatSelector:
                                 while len(preview_cache) > cache_size:
                                     preview_cache.popitem(last=False)
                         last_fetch_error = None
+                        last_fetch_error_chat_id = None
                     except Exception as e:  # noqa: BLE001
                         last_fetch_error = f"{error_text}: {e}"
+                        last_fetch_error_chat_id = inflight_chat_id
                     finally:
                         inflight = None
                         inflight_chat_id = None
@@ -949,9 +1019,9 @@ class ChatSelector:
                                     body_lines.append(prefix + _truncate(msg, max(0, (preview_w - 2) - len(prefix))))
                                 if len(body_lines) >= max_preview_lines:
                                     break
-                        elif show_loading and (inflight_chat_id == cur.chat_id or inflight is not None):
+                        elif show_loading and inflight is not None and inflight_chat_id == cur.chat_id:
                             body_lines = [loading_text]
-                        elif last_fetch_error:
+                        elif last_fetch_error and last_fetch_error_chat_id == cur.chat_id:
                             body_lines = [_truncate(last_fetch_error, max(0, preview_w - 2))]
                         else:
                             # Фолбэк (без сети пока нет данных)
@@ -1061,6 +1131,33 @@ class ChatSelector:
                 curses.nocbreak()
                 curses.echo()
                 curses.endwin()
+            except Exception:
+                pass
+            # Восстановить stdout/stderr и обработчики логгера
+            try:
+                sys.stdout = saved_stdout
+                sys.stderr = saved_stderr
+            except Exception:
+                pass
+            try:
+                if tui_file_handler is not None:
+                    try:
+                        root_logger.removeHandler(tui_file_handler)
+                    except Exception:
+                        pass
+                    try:
+                        tui_file_handler.close()
+                    except Exception:
+                        pass
+                # Восстановить исходные handlers как были
+                root_logger.handlers = saved_handlers  # type: ignore[assignment]
+                root_logger.setLevel(saved_root_level)
+            except Exception:
+                pass
+            try:
+                if tui_log_file is not None:
+                    tui_log_file.flush()
+                    tui_log_file.close()
             except Exception:
                 pass
 
