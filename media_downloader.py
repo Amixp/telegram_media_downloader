@@ -3,7 +3,7 @@ import asyncio
 import logging
 import os
 from datetime import date, datetime, timezone
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from rich.logging import RichHandler
 from telethon import TelegramClient
@@ -703,36 +703,51 @@ async def main_async():
 
     # Выбор чатов
     language = config.get("language", "ru")
-    chat_selector = ChatSelector(client, language)
+    chat_selector = ChatSelector(client, language, tui_config=config.get("tui"))
+    chat_selection_ui = config.get("chat_selection_ui", "classic")
 
     # Проверить, есть ли сохраненные чаты в конфиге
     selected_chats = []
     if "chats" in config and isinstance(config["chats"], list):
-        # Использовать сохраненные чаты
         enabled_chats = [
             (c["chat_id"], c.get("title", ""), "saved")
             for c in config["chats"]
-            if c.get("enabled", True)
+            if c.get("enabled", True) and "chat_id" in c
         ]
-        if enabled_chats:
-            use_saved = True
-            if config.get("interactive_chat_selection", True):
-                from rich.prompt import Confirm
-                use_saved = Confirm.ask(
-                    "Использовать сохраненные чаты?", default=True
+        preselected_ids: Set[int] = {
+            c["chat_id"] for c in config["chats"] if c.get("enabled", True) and "chat_id" in c
+        }
+
+        if enabled_chats and not config.get("interactive_chat_selection", True):
+            selected_chats = enabled_chats
+        elif enabled_chats and config.get("interactive_chat_selection", True):
+            from rich.prompt import Confirm
+
+            edit = Confirm.ask("Редактировать список чатов?", default=False)
+            if edit:
+                selected_chats = await chat_selector.select_chats(
+                    allow_multiple=True,
+                    ui=chat_selection_ui,
+                    preselected_chat_ids=preselected_ids,
                 )
-            if use_saved:
-                selected_chats = enabled_chats
             else:
-                selected_chats = await chat_selector.select_chats(allow_multiple=True)
+                selected_chats = enabled_chats
         else:
-            selected_chats = await chat_selector.select_chats(allow_multiple=True)
+            selected_chats = await chat_selector.select_chats(
+                allow_multiple=True,
+                ui=chat_selection_ui,
+                preselected_chat_ids=preselected_ids,
+            )
     elif config.get("chat_id"):
         # Старая структура - один чат
         selected_chats = [(config["chat_id"], "", "single")]
     else:
         # Интерактивный выбор
-        selected_chats = await chat_selector.select_chats(allow_multiple=True)
+        selected_chats = await chat_selector.select_chats(
+            allow_multiple=True,
+            ui=chat_selection_ui,
+            preselected_chat_ids=None,
+        )
 
     if not selected_chats:
         logger.warning("Не выбрано ни одного чата для загрузки")
@@ -740,23 +755,8 @@ async def main_async():
         return
 
     # Сохранить выбранные чаты в конфиг
-    if not ("chats" in config and isinstance(config["chats"], list)):
-        config["chats"] = []
-
-    for chat_id, title, _ in selected_chats:
-        # Проверить, есть ли уже этот чат в конфиге
-        existing_chat = next(
-            (c for c in config["chats"] if c.get("chat_id") == chat_id), None
-        )
-        if not existing_chat:
-            config["chats"].append({
-                "chat_id": chat_id,
-                "title": title,
-                "last_read_message_id": 0,
-                "ids_to_retry": [],
-                "enabled": True,
-            })
-    config_manager.save(config)
+    config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
+    config_manager.save()
 
     # Загрузить для каждого выбранного чата
     download_manager = DownloadManager(config_manager)

@@ -2,7 +2,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -220,6 +220,64 @@ class ConfigManager:
             # Старая структура с одним чатом
             self._config["last_read_message_id"] = last_read_message_id
             self._config["ids_to_retry"] = ids_to_retry
+
+    def set_selected_chats(
+        self,
+        selected_chats: Sequence[Tuple[int, str]],
+    ) -> None:
+        """
+        Сохранить список выбранных чатов в конфигурации с возможностью редактирования.
+
+        Логика:
+        - Все существующие записи в `config["chats"]` помечаются как `enabled=False`
+        - Для выбранных чатов создаются/обновляются записи и ставится `enabled=True`
+        - Для уже известных чатов сохраняются `last_read_message_id` и `ids_to_retry`
+
+        Parameters
+        ----------
+        selected_chats: Sequence[Tuple[int, str]]
+            Список (chat_id, title) выбранных чатов.
+        """
+        if self._config is None:
+            self.load()
+        if self._config is None:
+            raise ValueError("Конфигурация не загружена")
+
+        if "chats" not in self._config or not isinstance(self._config.get("chats"), list):
+            self._config["chats"] = []
+
+        chats_list: List[Dict[str, Any]] = self._config["chats"]
+        by_id: Dict[int, Dict[str, Any]] = {
+            c.get("chat_id"): c for c in chats_list if isinstance(c, dict) and "chat_id" in c
+        }
+
+        # По умолчанию выключить все
+        for chat in chats_list:
+            if isinstance(chat, dict):
+                chat["enabled"] = False
+
+        for chat_id, title in selected_chats:
+            existing = by_id.get(chat_id)
+            if existing is None:
+                existing = {
+                    "chat_id": chat_id,
+                    "title": title,
+                    "last_read_message_id": 0,
+                    "ids_to_retry": [],
+                }
+                chats_list.append(existing)
+                by_id[chat_id] = existing
+
+            # Обновить title, если получили непустой
+            if isinstance(title, str) and title.strip():
+                existing["title"] = title
+
+            if "last_read_message_id" not in existing:
+                existing["last_read_message_id"] = 0
+            if "ids_to_retry" not in existing:
+                existing["ids_to_retry"] = []
+
+            existing["enabled"] = True
 
     @property
     def config(self) -> Dict[str, Any]:

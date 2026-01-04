@@ -1,5 +1,13 @@
 """Модуль для интерактивного выбора чатов."""
-from typing import Dict, List, Optional, Tuple
+
+from __future__ import annotations
+
+import asyncio
+import textwrap
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from rich.console import Console
 from rich.prompt import Confirm, IntPrompt, Prompt
@@ -10,10 +18,101 @@ from telethon.tl.types import Chat, User
 from utils.i18n import get_i18n
 
 
+@dataclass(frozen=True)
+class ChatListItem:
+    """Элемент списка чатов для выбора."""
+
+    chat_id: int
+    title: str
+    chat_type: str
+    last_message_preview: str = ""
+
+
 class ChatSelector:
     """Класс для интерактивного выбора чатов."""
 
-    def __init__(self, client: TelegramClient, language: str = "ru"):
+    _DEFAULT_TUI_CONFIG: Dict[str, Any] = {
+        "display": {
+            "show_chat_id": True,
+        },
+        "preview": {
+            # Сколько последних сообщений показывать в превью справа.
+            # 1 = текущее поведение (берём dialog.message, без сетевых запросов).
+            "messages_count": 1,
+            # Режим получения сообщений, если messages_count > 1:
+            # - "on_demand": подкачка по курсору
+            # - "off": никогда не делать сетевых запросов (даже если messages_count > 1)
+            # - "auto": on_demand если messages_count > 1, иначе off
+            "fetch_mode": "auto",
+            # Дебаунс (мс) перед запросом после остановки курсора
+            "debounce_ms": 200,
+            # Кэш превью по chat_id (LRU)
+            "cache_size": 128,
+            "cache_ttl_s": 300,
+            # Рендер (вариант D): переносить строки по ширине и ограничивать высоту
+            "wrap": True,
+            "max_lines": 12,
+            "show_loading": True,
+            "loading_text": "Загружаю…",
+            "error_text": "Ошибка загрузки превью",
+            "label_single": "Последнее сообщение:",
+            "label_multi": "Последние сообщения:",
+            "include_media_placeholder": True,
+            # Частота опроса клавиатуры/обновления (мс)
+            "poll_interval_ms": 33,
+        },
+        "colors": {
+            # Цвета: black, red, green, yellow, blue, magenta, cyan, white, default
+            # Для фона используйте *_bg. "default" = фон/цвет терминала.
+            "screen_fg": "default",
+            "screen_bg": "default",
+            "header_fg": "cyan",
+            "header_bg": "default",
+            "footer_fg": "white",
+            "footer_bg": "default",
+            "separator_fg": "blue",
+            "separator_bg": "default",
+            "list_fg": "default",
+            "list_bg": "default",
+            # Если selected_fg/selected_bg == default, выделение будет через reverse (как раньше)
+            "selected_fg": "default",
+            "selected_bg": "default",
+        },
+        "layout": {
+            "list_min_width": 30,
+            "list_width_ratio": 0.5,
+            "preview_min_width": 10,
+        },
+        "text": {
+            "header": (
+                "Выбор чатов: ↑/↓ PgUp/PgDn Home/End | Space=выбрать | "
+                "Enter=OK | f=фильтр | /=поиск по имени | c=очистить | q/Esc=выход"
+            ),
+            "no_chats": "Нет доступных чатов",
+            "search_prompt": "Поиск по имени: ",
+        },
+        "keys": {
+            "quit": ["q", "esc"],
+            "confirm": ["enter"],
+            "toggle": ["space"],
+            "filter": ["f"],
+            "search": ["/"],
+            "clear": ["c"],
+            "up": ["up", "k"],
+            "down": ["down", "j"],
+            "page_up": ["pageup"],
+            "page_down": ["pagedown"],
+            "home": ["home"],
+            "end": ["end"],
+        },
+    }
+
+    def __init__(
+        self,
+        client: TelegramClient,
+        language: str = "ru",
+        tui_config: Optional[Dict[str, Any]] = None,
+    ):
         """
         Инициализация ChatSelector.
 
@@ -23,11 +122,39 @@ class ChatSelector:
             Клиент Telethon.
         language: str
             Язык интерфейса.
+        tui_config: Optional[Dict[str, Any]]
+            Настройки TUI из конфигурации (секция `tui`).
         """
         self.client = client
         self.i18n = get_i18n(language)
         self.console = Console()
         self.page_size = 50  # Количество чатов на странице
+        self._tui_config_raw: Dict[str, Any] = tui_config or {}
+
+    def _get_tui_config(self) -> Dict[str, Any]:
+        """
+        Получить TUI конфигурацию с применением дефолтов.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Слитая конфигурация TUI.
+        """
+        cfg: Dict[str, Any] = {
+            "display": dict(self._DEFAULT_TUI_CONFIG["display"]),
+            "preview": dict(self._DEFAULT_TUI_CONFIG["preview"]),
+            "colors": dict(self._DEFAULT_TUI_CONFIG["colors"]),
+            "layout": dict(self._DEFAULT_TUI_CONFIG["layout"]),
+            "text": dict(self._DEFAULT_TUI_CONFIG["text"]),
+            "keys": dict(self._DEFAULT_TUI_CONFIG["keys"]),
+        }
+        raw = self._tui_config_raw
+        if isinstance(raw, dict):
+            for section in ("display", "preview", "colors", "layout", "text", "keys"):
+                val = raw.get(section)
+                if isinstance(val, dict):
+                    cfg[section].update(val)
+        return cfg
 
     async def get_available_chats(self) -> List[Tuple[int, str, str]]:
         """
@@ -54,6 +181,102 @@ class ChatSelector:
 
             chats.append((chat_id, title, chat_type))
         return chats
+
+    async def get_available_chat_items(self) -> List[ChatListItem]:
+        """
+        Получить список доступных чатов с превью последнего сообщения.
+
+        Notes
+        -----
+        Превью берётся из `dialog.message` (последнее сообщение диалога), без
+        дополнительных сетевых запросов.
+
+        Returns
+        -------
+        List[ChatListItem]
+            Список элементов чатов для TUI/интерактивного выбора.
+        """
+        items: List[ChatListItem] = []
+        async for dialog in self.client.iter_dialogs():
+            chat_id = dialog.id
+            title = dialog.name
+            entity = dialog.entity
+
+            if isinstance(entity, User):
+                chat_type = "user"
+            elif isinstance(entity, Chat):
+                chat_type = "group"
+            else:
+                chat_type = "channel"
+
+            preview = ""
+            last_msg = getattr(dialog, "message", None)
+            if last_msg is not None:
+                text = getattr(last_msg, "message", None)
+                if isinstance(text, str):
+                    preview = text.replace("\n", " ").strip()
+                if not preview and getattr(last_msg, "media", None) is not None:
+                    preview = "<media>"
+
+            items.append(
+                ChatListItem(
+                    chat_id=chat_id,
+                    title=title or "",
+                    chat_type=chat_type,
+                    last_message_preview=preview,
+                )
+            )
+        return items
+
+    @staticmethod
+    def filter_chat_items(
+        items: Sequence[ChatListItem],
+        filter_mode: str = "all",
+        search_query: str = "",
+    ) -> List[ChatListItem]:
+        """
+        Отфильтровать список чатов для TUI по типу и поисковому запросу.
+
+        Parameters
+        ----------
+        items: Sequence[ChatListItem]
+            Входной список.
+        filter_mode: str
+            Режим фильтрации по типу:
+            - "all": все
+            - "groups_channels": группы + каналы
+            - "channels": только каналы
+            - "groups": только группы
+            - "users": только пользователи
+        search_query: str
+            Поисковый запрос по названию чата (подстрока, без регистра).
+
+        Returns
+        -------
+        List[ChatListItem]
+            Отфильтрованный список.
+        """
+        filtered: List[ChatListItem] = list(items)
+
+        if filter_mode == "groups_channels":
+            filtered = [i for i in filtered if i.chat_type in ("group", "channel")]
+        elif filter_mode == "channels":
+            filtered = [i for i in filtered if i.chat_type == "channel"]
+        elif filter_mode == "groups":
+            filtered = [i for i in filtered if i.chat_type == "group"]
+        elif filter_mode == "users":
+            filtered = [i for i in filtered if i.chat_type == "user"]
+
+        q = (search_query or "").strip().lower()
+        if q:
+            filtered = [
+                i
+                for i in filtered
+                if q in (i.title or "").lower()
+                or q in str(i.chat_id)
+            ]
+
+        return filtered
 
     def filter_chats(
         self,
@@ -279,8 +502,576 @@ class ChatSelector:
 
         return selected_chats
 
+    async def _select_chats_tui(
+        self,
+        items: Sequence[ChatListItem],
+        preselected_chat_ids: Optional[Set[int]] = None,
+    ) -> List[Tuple[int, str, str]]:
+        """
+        TUI выбор чатов: навигация клавишами + пробел для выбора.
+
+        Управление:
+        - ↑/↓, PgUp/PgDn, Home/End: навигация
+        - Space: toggle выбора
+        - Enter: подтвердить
+        - q / ESC: отменить (вернёт пустой список)
+
+        Parameters
+        ----------
+        items: Sequence[ChatListItem]
+            Список чатов.
+        preselected_chat_ids: Optional[Set[int]]
+            Предварительно выбранные chat_id (например из config.yaml).
+
+        Returns
+        -------
+        List[Tuple[int, str, str]]
+            Список выбранных чатов в формате (chat_id, title, type).
+        """
+        try:
+            import curses
+        except Exception:  # pragma: no cover - optional on Windows without windows-curses
+            self.console.print(
+                "[yellow]TUI режим недоступен (нет curses). Использую старый интерактивный режим.[/yellow]"
+            )
+            return self.select_chats_interactive([(i.chat_id, i.title, i.chat_type) for i in items])
+
+        tui_cfg = self._get_tui_config()
+        display_cfg = tui_cfg.get("display", {})
+        preview_cfg = tui_cfg.get("preview", {})
+        layout_cfg = tui_cfg.get("layout", {})
+        text_cfg = tui_cfg.get("text", {})
+        colors_cfg = tui_cfg.get("colors", {})
+        keys_cfg = tui_cfg.get("keys", {})
+        show_chat_id = display_cfg.get("show_chat_id", True) is True
+
+        selected: Set[int] = set(preselected_chat_ids or set())
+        filter_mode = "all"
+        search_query = ""
+        index = 0
+        offset = 0
+
+        def _type_label(t: str) -> str:
+            return {"user": "👤", "group": "👥", "channel": "📢"}.get(t, "?")
+
+        def _filter_label(mode: str) -> str:
+            return {
+                "all": "все",
+                "groups_channels": "группы+каналы",
+                "channels": "каналы",
+                "groups": "группы",
+                "users": "пользователи",
+            }.get(mode, mode)
+
+        def _truncate(s: str, width: int) -> str:
+            if width <= 1:
+                return ""
+            if len(s) <= width:
+                return s
+            return s[: max(0, width - 1)] + "…"
+
+        def _as_int(v: Any, default: int, *, min_value: int = 0, max_value: Optional[int] = None) -> int:
+            try:
+                iv = int(v)
+            except Exception:
+                return default
+            if iv < min_value:
+                return min_value
+            if max_value is not None and iv > max_value:
+                return max_value
+            return iv
+
+        def _as_bool(v: Any, default: bool) -> bool:
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float)):
+                return bool(v)
+            if isinstance(v, str):
+                s = v.strip().lower()
+                if s in ("1", "true", "yes", "y", "on"):
+                    return True
+                if s in ("0", "false", "no", "n", "off"):
+                    return False
+            return default
+
+        def _normalize_message_text(text: Any, has_media: bool, include_media_placeholder: bool) -> str:
+            if isinstance(text, str):
+                t = text.replace("\n", " ").strip()
+                if t:
+                    return t
+            if has_media and include_media_placeholder:
+                return "<media>"
+            return ""
+
+        def _wrap_lines(s: str, width: int) -> List[str]:
+            if width <= 1:
+                return [""]
+            if not s:
+                return [""]
+            # textwrap работает по "символам", не по wcwidth, но для UI превью это приемлемо.
+            return textwrap.wrap(s, width=width, replace_whitespace=True, drop_whitespace=True) or [""]
+
+        preview_messages_count = _as_int(preview_cfg.get("messages_count", 1), 1, min_value=1, max_value=100)
+        fetch_mode_raw = str(preview_cfg.get("fetch_mode", "auto")).strip().lower()
+        if fetch_mode_raw not in ("auto", "on_demand", "off"):
+            fetch_mode_raw = "auto"
+        fetch_mode = "off" if preview_messages_count <= 1 else ("on_demand" if fetch_mode_raw in ("auto", "on_demand") else "off")
+        debounce_s = _as_int(preview_cfg.get("debounce_ms", 200), 200, min_value=0, max_value=10_000) / 1000.0
+        cache_size = _as_int(preview_cfg.get("cache_size", 128), 128, min_value=0, max_value=10_000)
+        cache_ttl_s = float(_as_int(preview_cfg.get("cache_ttl_s", 300), 300, min_value=0, max_value=86_400))
+        wrap_enabled = _as_bool(preview_cfg.get("wrap", True), True)
+        max_preview_lines = _as_int(preview_cfg.get("max_lines", 12), 12, min_value=1, max_value=10_000)
+        show_loading = _as_bool(preview_cfg.get("show_loading", True), True)
+        include_media_placeholder = _as_bool(preview_cfg.get("include_media_placeholder", True), True)
+        loading_text = str(preview_cfg.get("loading_text", "Загружаю…"))
+        error_text = str(preview_cfg.get("error_text", "Ошибка загрузки превью"))
+        label_single = str(preview_cfg.get("label_single", "Последнее сообщение:"))
+        label_multi = str(preview_cfg.get("label_multi", "Последние сообщения:"))
+        poll_interval_s = _as_int(preview_cfg.get("poll_interval_ms", 33), 33, min_value=1, max_value=1000) / 1000.0
+
+        def _prompt_input(stdscr, prompt: str, initial: str = "") -> str:  # noqa: ANN001
+            """
+            Простой ввод строки внизу экрана.
+
+            Не делаем fancy editing — достаточно для поиска.
+            """
+            height, width = stdscr.getmaxyx()
+            y = height - 1
+            stdscr.move(y, 0)
+            stdscr.clrtoeol()
+            text = f"{prompt}{initial}"
+            stdscr.addstr(y, 0, _truncate(text, max(0, width - 1)))
+            stdscr.refresh()
+
+            curses.echo()
+            try:
+                stdscr.move(y, min(len(prompt) + len(initial), max(0, width - 2)))
+                raw = stdscr.getstr(y, len(prompt), max(0, width - len(prompt) - 1))
+            finally:
+                curses.noecho()
+            try:
+                return raw.decode("utf-8")
+            except Exception:
+                return str(raw)
+
+        def _color_to_curses(color_name: Any) -> int:
+            name = str(color_name).strip().lower()
+            if name in ("default", "-1", "none"):
+                return -1
+            mapping = {
+                "black": curses.COLOR_BLACK,
+                "red": curses.COLOR_RED,
+                "green": curses.COLOR_GREEN,
+                "yellow": curses.COLOR_YELLOW,
+                "blue": curses.COLOR_BLUE,
+                "magenta": curses.COLOR_MAGENTA,
+                "cyan": curses.COLOR_CYAN,
+                "white": curses.COLOR_WHITE,
+            }
+            return mapping.get(name, curses.COLOR_WHITE)
+
+        def _parse_key_spec(spec: Any) -> Set[int]:
+            """
+            Преобразовать спецификацию клавиш из конфига в набор keycodes.
+            Поддержка:
+            - строки: "q", "esc", "enter", "space", "up", "down", "pageup", ...
+            - числа: 27, 10, ...
+            - списки: ["q", "esc"]
+            """
+            out: Set[int] = set()
+            if spec is None:
+                return out
+            if isinstance(spec, (list, tuple, set)):
+                for s in spec:
+                    out |= _parse_key_spec(s)
+                return out
+            if isinstance(spec, int):
+                out.add(spec)
+                return out
+
+            key = str(spec).strip().lower()
+            if key == "enter":
+                out |= {10, 13}
+            elif key == "esc":
+                out.add(27)
+            elif key == "space":
+                out.add(ord(" "))
+            elif key == "up":
+                out.add(curses.KEY_UP)
+            elif key == "down":
+                out.add(curses.KEY_DOWN)
+            elif key in ("pageup", "pgup"):
+                out.add(curses.KEY_PPAGE)
+            elif key in ("pagedown", "pgdn"):
+                out.add(curses.KEY_NPAGE)
+            elif key == "home":
+                out.add(curses.KEY_HOME)
+            elif key == "end":
+                out.add(curses.KEY_END)
+            elif len(key) == 1:
+                out.add(ord(key))
+            return out
+
+        keymap = {
+            "quit": _parse_key_spec(keys_cfg.get("quit", self._DEFAULT_TUI_CONFIG["keys"]["quit"])),
+            "confirm": _parse_key_spec(keys_cfg.get("confirm", self._DEFAULT_TUI_CONFIG["keys"]["confirm"])),
+            "toggle": _parse_key_spec(keys_cfg.get("toggle", self._DEFAULT_TUI_CONFIG["keys"]["toggle"])),
+            "filter": _parse_key_spec(keys_cfg.get("filter", self._DEFAULT_TUI_CONFIG["keys"]["filter"])),
+            "search": _parse_key_spec(keys_cfg.get("search", self._DEFAULT_TUI_CONFIG["keys"]["search"])),
+            "clear": _parse_key_spec(keys_cfg.get("clear", self._DEFAULT_TUI_CONFIG["keys"]["clear"])),
+            "up": _parse_key_spec(keys_cfg.get("up", self._DEFAULT_TUI_CONFIG["keys"]["up"])),
+            "down": _parse_key_spec(keys_cfg.get("down", self._DEFAULT_TUI_CONFIG["keys"]["down"])),
+            "page_up": _parse_key_spec(keys_cfg.get("page_up", self._DEFAULT_TUI_CONFIG["keys"]["page_up"])),
+            "page_down": _parse_key_spec(keys_cfg.get("page_down", self._DEFAULT_TUI_CONFIG["keys"]["page_down"])),
+            "home": _parse_key_spec(keys_cfg.get("home", self._DEFAULT_TUI_CONFIG["keys"]["home"])),
+            "end": _parse_key_spec(keys_cfg.get("end", self._DEFAULT_TUI_CONFIG["keys"]["end"])),
+        }
+
+        async def _fetch_preview(chat_id: int, limit: int) -> List[str]:
+            msgs = await self.client.get_messages(chat_id, limit=limit)
+            out: List[str] = []
+            for m in msgs:
+                text = getattr(m, "message", None)
+                has_media = getattr(m, "media", None) is not None
+                norm = _normalize_message_text(text, has_media, include_media_placeholder)
+                if norm:
+                    out.append(norm)
+            return out
+
+        # LRU cache: chat_id -> (ts, [messages...])
+        preview_cache: "OrderedDict[int, Tuple[float, List[str]]]" = OrderedDict()
+        inflight: Optional[asyncio.Task[List[str]]] = None
+        inflight_chat_id: Optional[int] = None
+        last_fetch_error: Optional[str] = None
+        cursor_changed_at = time.monotonic()
+        last_cursor_chat_id: Optional[int] = None
+
+        stdscr = None
+        try:
+            stdscr = curses.initscr()
+            curses.noecho()
+            curses.cbreak()
+            stdscr.keypad(True)
+            curses.curs_set(0)
+            stdscr.nodelay(True)
+            stdscr.timeout(0)
+
+            # Цвета (зависят от терминала). Если не поддерживаются — остаёмся на дефолтных атрибутах.
+            header_attr = curses.A_BOLD
+            footer_attr = curses.A_DIM
+            sep_attr = curses.A_DIM
+            list_attr = curses.A_NORMAL
+            selected_attr: Optional[int] = None
+            if curses.has_colors():
+                curses.start_color()
+                try:
+                    curses.use_default_colors()
+                except Exception:
+                    pass
+                screen_fg = _color_to_curses(colors_cfg.get("screen_fg", "default"))
+                screen_bg = _color_to_curses(colors_cfg.get("screen_bg", "default"))
+                header_fg = _color_to_curses(colors_cfg.get("header_fg", "cyan"))
+                header_bg = _color_to_curses(colors_cfg.get("header_bg", "default"))
+                footer_fg = _color_to_curses(colors_cfg.get("footer_fg", "white"))
+                footer_bg = _color_to_curses(colors_cfg.get("footer_bg", "default"))
+                sep_fg = _color_to_curses(colors_cfg.get("separator_fg", "blue"))
+                sep_bg = _color_to_curses(colors_cfg.get("separator_bg", "default"))
+                list_fg = _color_to_curses(colors_cfg.get("list_fg", "default"))
+                list_bg = _color_to_curses(colors_cfg.get("list_bg", "default"))
+                sel_fg = _color_to_curses(colors_cfg.get("selected_fg", "default"))
+                sel_bg = _color_to_curses(colors_cfg.get("selected_bg", "default"))
+
+                curses.init_pair(1, header_fg, header_bg)  # header
+                curses.init_pair(2, footer_fg, footer_bg)  # footer
+                curses.init_pair(3, sep_fg, sep_bg)        # separator
+                curses.init_pair(4, list_fg, list_bg)      # list
+                curses.init_pair(6, screen_fg, screen_bg)  # screen
+                header_attr |= curses.color_pair(1)
+                footer_attr |= curses.color_pair(2)
+                sep_attr |= curses.color_pair(3)
+                list_attr |= curses.color_pair(4)
+
+                # Глобальный фон экрана (опционально)
+                stdscr.bkgd(" ", curses.color_pair(6))
+
+                # Явный цвет выделения строки списка (если задан не-default)
+                if sel_fg != -1 or sel_bg != -1:
+                    curses.init_pair(5, sel_fg, sel_bg)  # selected
+                    selected_attr = curses.color_pair(5)
+
+            while True:
+                # Обработать завершение фонового запроса превью
+                if inflight is not None and inflight.done():
+                    try:
+                        msgs = inflight.result()
+                        if inflight_chat_id is not None:
+                            preview_cache[inflight_chat_id] = (time.monotonic(), msgs)
+                            preview_cache.move_to_end(inflight_chat_id)
+                            if cache_size > 0:
+                                while len(preview_cache) > cache_size:
+                                    preview_cache.popitem(last=False)
+                        last_fetch_error = None
+                    except Exception as e:  # noqa: BLE001
+                        last_fetch_error = f"{error_text}: {e}"
+                    finally:
+                        inflight = None
+                        inflight_chat_id = None
+
+                filtered_items = self.filter_chat_items(
+                    items, filter_mode=filter_mode, search_query=search_query
+                )
+                stdscr.erase()
+                height, width = stdscr.getmaxyx()
+
+                header = str(text_cfg.get("header", self._DEFAULT_TUI_CONFIG["text"]["header"]))
+                stdscr.addstr(0, 0, _truncate(header, max(0, width - 1)), header_attr)
+
+                if not filtered_items:
+                    stdscr.addstr(2, 0, str(text_cfg.get("no_chats", self._DEFAULT_TUI_CONFIG["text"]["no_chats"])))
+                    meta0 = f"Фильтр: {_filter_label(filter_mode)} | Поиск: {search_query or '—'}"
+                    stdscr.addstr(3, 0, _truncate(meta0, max(0, width - 1)))
+                    stdscr.refresh()
+                    k0 = stdscr.getch()
+                    if k0 in keymap["quit"] or k0 in keymap["confirm"]:
+                        return []
+                    if k0 in keymap["filter"]:
+                        filter_mode = {
+                            "all": "groups_channels",
+                            "groups_channels": "channels",
+                            "channels": "groups",
+                            "groups": "users",
+                            "users": "all",
+                        }.get(filter_mode, "all")
+                    if k0 in keymap["clear"]:
+                        search_query = ""
+                    if k0 in keymap["search"]:
+                        search_query = _prompt_input(
+                            stdscr,
+                            str(
+                                text_cfg.get(
+                                    "search_prompt",
+                                    self._DEFAULT_TUI_CONFIG["text"]["search_prompt"],
+                                )
+                            ),
+                            initial=search_query,
+                        ).strip()
+                    await asyncio.sleep(poll_interval_s)
+                    continue
+
+                # Разделение на список/превью
+                list_min_width = int(layout_cfg.get("list_min_width", 30))
+                list_width_ratio = float(layout_cfg.get("list_width_ratio", 0.5))
+                preview_min_width = int(layout_cfg.get("preview_min_width", 10))
+                list_w = max(list_min_width, int(width * list_width_ratio))
+                preview_w = max(0, width - list_w - 1)
+                list_h = max(0, height - 2)
+
+                # Нормализовать индекс при смене фильтра/поиска
+                if index >= len(filtered_items):
+                    index = max(0, len(filtered_items) - 1)
+
+                # Поддержать offset так, чтобы курсор был виден
+                if index < offset:
+                    offset = index
+                if index >= offset + list_h:
+                    offset = max(0, index - list_h + 1)
+
+                cur = filtered_items[index]
+                if last_cursor_chat_id != cur.chat_id:
+                    last_cursor_chat_id = cur.chat_id
+                    cursor_changed_at = time.monotonic()
+
+                # Запланировать on-demand подкачку превью (вариант B)
+                if fetch_mode == "on_demand" and preview_messages_count > 1:
+                    cached = preview_cache.get(cur.chat_id)
+                    now = time.monotonic()
+                    is_fresh = (
+                        cached is not None
+                        and (cache_ttl_s <= 0 or (now - cached[0]) <= cache_ttl_s)
+                        and len(cached[1]) >= 1
+                    )
+                    should_fetch = (not is_fresh) and (inflight is None) and ((now - cursor_changed_at) >= debounce_s)
+                    if should_fetch:
+                        inflight_chat_id = cur.chat_id
+                        inflight = asyncio.create_task(_fetch_preview(cur.chat_id, preview_messages_count))
+
+                # Рендер списка
+                for row in range(list_h):
+                    i = offset + row
+                    if i >= len(filtered_items):
+                        break
+                    it = filtered_items[i]
+                    mark = "[x]" if it.chat_id in selected else "[ ]"
+                    chat_id_suffix = f" ({it.chat_id})" if show_chat_id else ""
+                    line = f"{mark} {_type_label(it.chat_type)} {it.title}{chat_id_suffix}"
+                    if i == index:
+                        attr = selected_attr if selected_attr is not None else (curses.A_REVERSE | list_attr)
+                    else:
+                        attr = list_attr
+                    stdscr.addstr(1 + row, 0, _truncate(line, list_w - 1), attr)
+
+                # Рендер превью
+                if preview_w >= preview_min_width:
+                    stdscr.addstr(1, list_w, "│", sep_attr)
+
+                    header_lines: List[str] = [f"{_type_label(cur.chat_type)} {cur.title}"]
+                    if show_chat_id:
+                        header_lines.append(f"chat_id: {cur.chat_id}")
+
+                    # Получить тело превью
+                    body_lines: List[str] = []
+                    if preview_messages_count <= 1 or fetch_mode == "off":
+                        label = label_single
+                        text = cur.last_message_preview or "<пусто>"
+                        if wrap_enabled:
+                            body_lines = _wrap_lines(text, max(0, preview_w - 2))
+                        else:
+                            body_lines = [_truncate(text, max(0, preview_w - 2))]
+                    else:
+                        label = label_multi
+                        cached = preview_cache.get(cur.chat_id)
+                        now = time.monotonic()
+                        fresh = (
+                            cached is not None
+                            and (cache_ttl_s <= 0 or (now - cached[0]) <= cache_ttl_s)
+                            and len(cached[1]) >= 1
+                        )
+                        if fresh:
+                            msgs = cached[1][:preview_messages_count]
+                            prefix_w = len("10. ")
+                            for idx_m, msg in enumerate(msgs, 1):
+                                prefix = f"{idx_m}. "
+                                if wrap_enabled:
+                                    wrapped = _wrap_lines(msg, max(0, (preview_w - 2) - len(prefix)))
+                                    for j, wl in enumerate(wrapped):
+                                        body_lines.append((prefix if j == 0 else " " * len(prefix)) + wl)
+                                else:
+                                    body_lines.append(prefix + _truncate(msg, max(0, (preview_w - 2) - len(prefix))))
+                                if len(body_lines) >= max_preview_lines:
+                                    break
+                        elif show_loading and (inflight_chat_id == cur.chat_id or inflight is not None):
+                            body_lines = [loading_text]
+                        elif last_fetch_error:
+                            body_lines = [_truncate(last_fetch_error, max(0, preview_w - 2))]
+                        else:
+                            # Фолбэк (без сети пока нет данных)
+                            text = cur.last_message_preview or "<пусто>"
+                            body_lines = _wrap_lines(text, max(0, preview_w - 2)) if wrap_enabled else [_truncate(text, max(0, preview_w - 2))]
+
+                    # Собрать и вывести, ограничив высоту
+                    info_lines: List[str] = []
+                    info_lines.extend(header_lines)
+                    info_lines.append("")
+                    info_lines.append(label)
+                    if not body_lines:
+                        body_lines = ["<пусто>"]
+                    if wrap_enabled:
+                        info_lines.extend(body_lines[:max_preview_lines])
+                    else:
+                        info_lines.extend([_truncate(x, max(0, preview_w - 2)) for x in body_lines[:max_preview_lines]])
+
+                    y = 1
+                    for idx_line, part in enumerate(info_lines):
+                        if y >= height:
+                            break
+                        attr_line = curses.A_BOLD if idx_line == 0 else curses.A_NORMAL
+                        stdscr.addstr(y, list_w + 1, _truncate(part, preview_w - 2), attr_line)
+                        y += 1
+
+                meta = (
+                    f"Фильтр: {_filter_label(filter_mode)} | "
+                    f"Поиск: {search_query or '—'} | "
+                    f"Показано: {len(filtered_items)}/{len(items)} | "
+                    f"Выбрано: {len(selected)}"
+                )
+                if height > 1:
+                    stdscr.addstr(height - 1, 0, _truncate(meta, max(0, width - 1)), footer_attr)
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key == -1:
+                    await asyncio.sleep(poll_interval_s)
+                    continue
+
+                if key in keymap["quit"]:
+                    return []
+                if key in keymap["confirm"]:
+                    break
+                if key in keymap["toggle"]:
+                    cid = filtered_items[index].chat_id
+                    if cid in selected:
+                        selected.remove(cid)
+                    else:
+                        selected.add(cid)
+                    continue
+                if key in keymap["clear"]:
+                    search_query = ""
+                    index = 0
+                    offset = 0
+                    continue
+                if key in keymap["search"]:
+                    search_query = _prompt_input(
+                        stdscr,
+                        str(
+                            text_cfg.get(
+                                "search_prompt",
+                                self._DEFAULT_TUI_CONFIG["text"]["search_prompt"],
+                            )
+                        ),
+                        initial=search_query,
+                    ).strip()
+                    index = 0
+                    offset = 0
+                    continue
+                if key in keymap["filter"]:
+                    filter_mode = {
+                        "all": "groups_channels",
+                        "groups_channels": "channels",
+                        "channels": "groups",
+                        "groups": "users",
+                        "users": "all",
+                    }.get(filter_mode, "all")
+                    index = 0
+                    offset = 0
+                    continue
+
+                if key in keymap["up"]:
+                    index = max(0, index - 1)
+                elif key in keymap["down"]:
+                    index = min(len(filtered_items) - 1, index + 1)
+                elif key in keymap["page_up"]:
+                    index = max(0, index - max(1, list_h))
+                elif key in keymap["page_down"]:
+                    index = min(len(filtered_items) - 1, index + max(1, list_h))
+                elif key in keymap["home"]:
+                    index = 0
+                elif key in keymap["end"]:
+                    index = len(filtered_items) - 1
+                await asyncio.sleep(0)
+        finally:
+            if inflight is not None and not inflight.done():
+                inflight.cancel()
+            if stdscr is not None:
+                try:
+                    stdscr.keypad(False)
+                except Exception:
+                    pass
+            try:
+                curses.nocbreak()
+                curses.echo()
+                curses.endwin()
+            except Exception:
+                pass
+
+        selected_items = [i for i in items if i.chat_id in selected]
+        return [(i.chat_id, i.title, i.chat_type) for i in selected_items]
+
     async def select_chats(
-        self, allow_multiple: bool = True
+        self,
+        allow_multiple: bool = True,
+        ui: str = "classic",
+        preselected_chat_ids: Optional[Set[int]] = None,
     ) -> List[Tuple[int, str, str]]:
         """
         Получить и выбрать чаты.
@@ -289,6 +1080,10 @@ class ChatSelector:
         ----------
         allow_multiple: bool
             Разрешить выбор нескольких чатов.
+        ui: str
+            Интерфейс выбора: "classic" (текущий) или "tui" (клавиатурный).
+        preselected_chat_ids: Optional[Set[int]]
+            Предварительно выбранные chat_id (например из config.yaml).
 
         Returns
         -------
@@ -296,7 +1091,13 @@ class ChatSelector:
             Список выбранных чатов.
         """
         self.console.print("[bold cyan]Получение списка чатов...[/bold cyan]")
-        chats = await self.get_available_chats()
+        if ui == "tui":
+            items = await self.get_available_chat_items()
+            if allow_multiple:
+                return await self._select_chats_tui(items, preselected_chat_ids)
+            chats = [(i.chat_id, i.title, i.chat_type) for i in items]
+        else:
+            chats = await self.get_available_chats()
 
         if not chats:
             self.console.print("[red]Нет доступных чатов[/red]")
