@@ -23,6 +23,10 @@ download_settings:
   history_format: json
   # Директория для истории сообщений
   history_directory: history
+  # Если история включена, но файл архива чата отсутствует (history/chat_{id}.jsonl или .txt),
+  # принудительно сбрасывать last_read_message_id и пересоздавать архив заново.
+  # Полезно если вы удалили папку history/ или переносили архив, а в config.yaml остались "хвосты".
+  history_rebuild_if_missing: false
 
 # Типы медиа для загрузки
 # Можно указать конкретные типы или "all" для всех типов

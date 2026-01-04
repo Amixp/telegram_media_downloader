@@ -142,6 +142,18 @@ class MockClient:
             return None
         return file or "downloaded"
 
+    def iter_messages(self, chat_id, min_id=0, reverse=False):  # noqa: ANN001
+        # Минимальная заглушка для тестов: возвращает async-генератор
+        self.last_iter_params = {"chat_id": chat_id, "min_id": min_id, "reverse": reverse}
+
+        async def _gen():
+            if hasattr(self, "_iter_messages"):
+                for m in self._iter_messages:  # type: ignore[attr-defined]
+                    yield m
+            return
+
+        return _gen()
+
 
 class MediaDownloaderTestCase(unittest.TestCase):
     @classmethod
@@ -332,3 +344,80 @@ class MediaDownloaderTestCase(unittest.TestCase):
     def tearDownClass(cls):
         asyncio.set_event_loop(None)
         cls.loop.close()
+
+    def test_history_rebuild_if_missing_resets_min_id(self):
+        # Конфиг: история включена, но архив отсутствует, last_read_message_id уже "в конце"
+        tmpdir = tempfile.mkdtemp(prefix="tmd-test-history-missing-")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        cfg_path = os.path.join(tmpdir, "config.yaml")
+        cfg = {
+            "api_id": 1,
+            "api_hash": "x",
+            "language": "ru",
+            "media_types": ["all"],
+            "file_formats": {"audio": ["all"], "document": ["all"], "video": ["all"]},
+            "download_settings": {
+                "skip_duplicates": False,
+                "download_message_history": True,
+                "history_format": "html",
+                "history_directory": "history",
+                "base_directory": tmpdir,
+                "history_rebuild_if_missing": True,
+            },
+            "chats": [
+                {"chat_id": 123456, "title": "T", "last_read_message_id": 500, "ids_to_retry": [], "enabled": True}
+            ],
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+
+        mgr = ConfigManager(config_path=cfg_path)
+        mgr.load()
+        dm = DownloadManager(mgr)
+        client = MockClient()
+        client._iter_messages = []  # type: ignore[attr-defined]
+
+        # Файла chat_123456.jsonl нет -> ожидаем min_id=1 (сброс)
+        self.loop.run_until_complete(dm.begin_import_chat(client, 123456, "T", pagination_limit=100))
+        self.assertEqual(client.last_iter_params["min_id"], 1)
+
+    def test_history_rebuild_if_missing_keeps_min_id_when_file_exists(self):
+        tmpdir = tempfile.mkdtemp(prefix="tmd-test-history-exists-")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        history_dir = os.path.join(tmpdir, "history")
+        os.makedirs(history_dir, exist_ok=True)
+        # Создать пустой JSONL как "архив существует"
+        with open(os.path.join(history_dir, "chat_123456.jsonl"), "w", encoding="utf-8") as f:
+            f.write("")
+
+        cfg_path = os.path.join(tmpdir, "config.yaml")
+        cfg = {
+            "api_id": 1,
+            "api_hash": "x",
+            "language": "ru",
+            "media_types": ["all"],
+            "file_formats": {"audio": ["all"], "document": ["all"], "video": ["all"]},
+            "download_settings": {
+                "skip_duplicates": False,
+                "download_message_history": True,
+                "history_format": "html",
+                "history_directory": "history",
+                "base_directory": tmpdir,
+                "history_rebuild_if_missing": True,
+            },
+            "chats": [
+                {"chat_id": 123456, "title": "T", "last_read_message_id": 500, "ids_to_retry": [], "enabled": True}
+            ],
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+
+        mgr = ConfigManager(config_path=cfg_path)
+        mgr.load()
+        dm = DownloadManager(mgr)
+        client = MockClient()
+        client._iter_messages = []  # type: ignore[attr-defined]
+
+        # Файл есть -> ожидаем min_id=501 (как обычно)
+        self.loop.run_until_complete(dm.begin_import_chat(client, 123456, "T", pagination_limit=100))
+        self.assertEqual(client.last_iter_params["min_id"], 501)

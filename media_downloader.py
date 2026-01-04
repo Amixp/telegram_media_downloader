@@ -600,6 +600,29 @@ class DownloadManager:
                 last_read_message_id = 0
                 ids_to_retry = []
 
+        # Если история включена, но файл архива отсутствует, можно принудительно пересоздать архив:
+        # сбрасываем last_read_message_id, чтобы заново пройти сообщения и записать JSONL/HTML.
+        download_settings = self.config.get("download_settings", {})
+        if (
+            self.history_manager is not None
+            and download_settings.get("history_rebuild_if_missing", False)
+            and isinstance(last_read_message_id, int)
+            and last_read_message_id > 0
+        ):
+            try:
+                ext = "txt" if self.history_manager.history_format == "txt" else "jsonl"
+                history_file = os.path.join(self.history_manager.history_path, f"chat_{chat_id}.{ext}")
+                if not os.path.exists(history_file):
+                    logger.warning(
+                        "История включена, но архив чата отсутствует (%s). "
+                        "Сбрасываю last_read_message_id и пересоздаю архив.",
+                        history_file,
+                    )
+                    last_read_message_id = 0
+            except Exception:
+                # Фолбэк: не ломаем загрузку из-за проблем с FS
+                pass
+
         try:
             messages_iter = client.iter_messages(
                 chat_id, min_id=last_read_message_id + 1, reverse=True
