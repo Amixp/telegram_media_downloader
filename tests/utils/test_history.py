@@ -116,3 +116,21 @@ class HistoryTestCase(unittest.TestCase):
         self.assertIn(f"chat_{new_chat_id}.html", html_text)
         self.assertIn("New Chat", html_text)
 
+    def test_generate_chat_html_skips_bad_jsonl_lines(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_dir = os.path.join(tmpdir, "history")
+            os.makedirs(history_dir, exist_ok=True)
+
+            chat_id = -777
+            jsonl_path = os.path.join(history_dir, f"chat_{chat_id}.jsonl")
+            with open(jsonl_path, "w", encoding="utf-8") as f:
+                f.write('{"id": 1, "date": "2020-01-01T00:00:00+00:00", "text": "ok", "chat_id": -777, "chat_title": "T"}\n')
+                f.write("{broken json\n")
+                f.write('{"id": 2, "date": "2020-01-01T00:00:01+00:00", "text": "ok2", "chat_id": -777, "chat_title": "T"}\n')
+
+            history = MessageHistory(base_directory=tmpdir, history_format="html")
+            history._generate_chat_html(chat_id)
+
+            html_path = os.path.join(history_dir, f"chat_{chat_id}.html")
+            self.assertTrue(os.path.exists(html_path))
+

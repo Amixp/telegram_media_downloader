@@ -412,10 +412,20 @@ class MessageHistory:
         if not os.path.exists(jsonl_file):
             return
 
-        messages = []
+        messages: List[Dict[str, Any]] = []
         with open(jsonl_file, "r", encoding="utf-8") as f:
             for line in f:
-                messages.append(json.loads(line))
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    # JSONL может быть частично записан (например, при аварийном завершении).
+                    # Генерация HTML не должна падать из-за одной битой строки.
+                    continue
+                if isinstance(obj, dict):
+                    messages.append(obj)
 
         if not messages:
             return
