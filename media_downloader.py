@@ -448,8 +448,10 @@ class DownloadManager:
 
         # Сохранить историю ВСЕХ сообщений, если включено
         if self.history_manager and messages:
-            chat_id = messages[0].chat.id if messages else 0
-            chat_title = getattr(messages[0].chat, "title", None)
+            first_message = messages[0]
+            chat = getattr(first_message, "chat", None)
+            chat_id = chat.id if chat else 0
+            chat_title = getattr(chat, "title", None)
             # Создать словарь только для текущего чата
             chat_files = {
                 msg_id: path
@@ -617,32 +619,39 @@ class DownloadManager:
                 pagination_count += 1
                 messages_list.append(message)
 
-        async for message in messages_iter:  # type: ignore
-            if end_date and message.date > end_date:
-                continue
-            if start_date and message.date < start_date:
-                break
-            if pagination_count != pagination_limit:
-                pagination_count += 1
-                messages_list.append(message)
-            else:
-                last_read_message_id = await self.process_messages(
-                    client,
-                    messages_list,
-                    media_types,
-                    self.config.get("file_formats", {}),
-                    download_directory,
-                    semaphore,
-                )
-                # Проверка max_messages только для текущего чата
-                chat_downloaded_count = sum(1 for (cid, _) in self.downloaded_ids if cid == chat_id)
-                if max_messages and chat_downloaded_count >= max_messages:
+        try:
+            async for message in messages_iter:  # type: ignore
+                if end_date and message.date > end_date:
+                    continue
+                if start_date and message.date < start_date:
                     break
-                pagination_count = 0
-                messages_list = []
-                messages_list.append(message)
-                self.config["last_read_message_id"] = last_read_message_id
-                self.update_config(chat_id)
+                if pagination_count != pagination_limit:
+                    pagination_count += 1
+                    messages_list.append(message)
+                else:
+                    last_read_message_id = await self.process_messages(
+                        client,
+                        messages_list,
+                        media_types,
+                        self.config.get("file_formats", {}),
+                        download_directory,
+                        semaphore,
+                    )
+                    # Проверка max_messages только для текущего чата
+                    chat_downloaded_count = sum(
+                        1 for (cid, _) in self.downloaded_ids if cid == chat_id
+                    )
+                    if max_messages and chat_downloaded_count >= max_messages:
+                        break
+                    pagination_count = 0
+                    messages_list = []
+                    messages_list.append(message)
+                    self.config["last_read_message_id"] = last_read_message_id
+                    self.update_config(chat_id)
+        except ValueError as e:
+            logger.error(f"Ошибка при получении сообщений для чата {chat_id}: {e}")
+            logger.error("Проверьте правильность chat_id в конфигурации")
+            return
         if messages_list:
             last_read_message_id = await self.process_messages(
                 client,

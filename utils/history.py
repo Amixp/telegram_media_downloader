@@ -252,7 +252,11 @@ class MessageHistory:
             photo = message.media.photo
             if photo:
                 media_info["photo_id"] = photo.id
-                media_info["file_size"] = getattr(photo, "size", None)
+                # У Telethon у фото обычно нет `size`, есть `sizes`.
+                # Не сохраняем null в JSONL: если размер нельзя получить — просто не пишем поле.
+                photo_size = self._get_photo_file_size(photo)
+                if photo_size is not None:
+                    media_info["file_size"] = photo_size
 
         elif isinstance(message.media, MessageMediaDocument):
             doc = message.media.document
@@ -272,6 +276,50 @@ class MessageHistory:
                         media_info["height"] = attr.h
 
         return media_info
+
+    @staticmethod
+    def _coerce_file_size(value: Any) -> int:
+        """
+        Нормализовать размер файла из JSONL.
+
+        В JSONL `file_size` может быть `null` (None) или не-int (например, строкой).
+        Для UI/HTML это не критично — возвращаем 0, чтобы форматирование не падало.
+        """
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            return value
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _get_photo_file_size(photo: Any) -> Optional[int]:
+        """
+        Попробовать получить размер фото (в байтах) из Telethon объекта.
+
+        У фото размер часто доступен только на уровне `sizes[*].size` или `len(sizes[*].bytes)`.
+        Возвращаем максимальный известный размер или None.
+        """
+        sizes = getattr(photo, "sizes", None)
+        if not sizes:
+            return None
+
+        max_size = 0
+        for s in sizes:
+            s_size = getattr(s, "size", None)
+            if isinstance(s_size, int) and s_size > max_size:
+                max_size = s_size
+                continue
+
+            s_bytes = getattr(s, "bytes", None)
+            if isinstance(s_bytes, (bytes, bytearray)):
+                max_size = max(max_size, len(s_bytes))
+
+        return max_size if max_size > 0 else None
 
     def save_batch(
         self,
@@ -833,7 +881,7 @@ class MessageHistory:
 
             media_type = msg.get("media_type", "unknown")
             file_name = msg.get("file_name", os.path.basename(file_path))
-            file_size = msg.get("file_size", 0)
+            file_size = self._coerce_file_size(msg.get("file_size"))
 
             # Превью для изображений
             if media_type == "photo":
@@ -884,7 +932,7 @@ class MessageHistory:
             # Медиа есть, но файл не скачан
             media_type = msg.get("media_type", "unknown")
             file_name = msg.get("file_name", "")
-            file_size = msg.get("file_size", 0)
+            file_size = self._coerce_file_size(msg.get("file_size"))
             size_str = self._format_file_size(file_size)
             icon = self._get_file_icon(media_type)
 
@@ -940,6 +988,8 @@ class MessageHistory:
 
     def _format_file_size(self, size_bytes: int) -> str:
         """Форматировать размер файла."""
+        # Доп. защита: даже если сюда прилетит не-int, не роняем генерацию HTML.
+        size_bytes = self._coerce_file_size(size_bytes)
         if size_bytes < 1024:
             return f"{size_bytes} B"
         elif size_bytes < 1024 * 1024:
