@@ -1135,8 +1135,10 @@ class ChatSelector:
                     _addstr_safe(stdscr, 3, 0, meta0, max(0, width - 1))
                     stdscr.refresh()
                     k0 = stdscr.getch()
-                    if k0 in keymap["quit"] or k0 in keymap["confirm"]:
+                    if k0 in keymap["quit"]:
                         return []
+                    if k0 in keymap["confirm"]:
+                        break
                     if k0 in keymap["show_selected"]:
                         show_selected_only = not show_selected_only
                         index = 0
