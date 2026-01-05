@@ -23,6 +23,10 @@ download_settings:
   history_format: json
   # Директория для истории сообщений
   history_directory: history
+  # Если история включена, но файл архива чата отсутствует (history/chat_{id}.jsonl или .txt),
+  # принудительно сбрасывать last_read_message_id и пересоздавать архив заново.
+  # Полезно если вы удалили папку history/ или переносили архив, а в config.yaml остались "хвосты".
+  history_rebuild_if_missing: false
 
 # Типы медиа для загрузки
 # Можно указать конкретные типы или "all" для всех типов
@@ -78,6 +82,97 @@ logging:
 # Интерактивный выбор чатов при запуске
 interactive_chat_selection: true
 
+# UI для выбора чатов:
+# - classic: текущий режим (ввод команд/номеров)
+# - tui: клавиатурный TUI (↑/↓, Space=выбор, Enter=OK) + превью последнего сообщения
+chat_selection_ui: tui
+
+# Настройки TUI (опционально). Если секция отсутствует — используются дефолты из кода.
+tui:
+  display:
+    # Показывать ли chat_id рядом с названием чата (в списке) и в превью справа
+    show_chat_id: true
+  preview:
+    # Сколько последних сообщений показывать в превью справа.
+    # 1 = без сетевых запросов (берётся dialog.message). >1 = подкачка по курсору (вариант B).
+    messages_count: 1
+    # Режим получения сообщений, если messages_count > 1:
+    # - auto: on_demand если messages_count > 1, иначе off
+    # - on_demand: подкачка по курсору + кэш
+    # - off: никогда не делать сетевых запросов (даже если messages_count > 1)
+    fetch_mode: auto
+    # Дебаунс перед запросом после остановки курсора (мс)
+    debounce_ms: 200
+    # Кэш превью (LRU) по chat_id
+    cache_size: 128
+    cache_ttl_s: 300
+    # Вариант D: перенос строк и ограничение высоты превью
+    wrap: true
+    max_lines: 12
+    show_loading: true
+    loading_text: "Загружаю…"
+    error_text: "Ошибка загрузки превью"
+    label_single: "Последнее сообщение:"
+    label_multi: "Последние сообщения:"
+    include_media_placeholder: true
+    # Частота опроса клавиатуры/обновления (мс). Меньше = отзывчивее, но больше CPU.
+    poll_interval_ms: 33
+  colors:
+    # Цвета: black, red, green, yellow, blue, magenta, cyan, white, default
+    # *_bg — фон. "default" = цвета терминала.
+    # Общий фон/цвет экрана
+    screen_fg: default
+    screen_bg: default
+    # Заголовок
+    header_fg: cyan
+    header_bg: default
+    # Подвал (строка статуса снизу)
+    footer_fg: white
+    footer_bg: default
+    # Разделитель между списком и превью
+    separator_fg: blue
+    separator_bg: default
+    # Список чатов (левая колонка)
+    list_fg: default
+    list_bg: default
+    # Выделенная строка списка (курсор). Если оба default — используется reverse (как раньше).
+    selected_fg: default
+    selected_bg: default
+  layout:
+    # Минимальная ширина левого списка
+    list_min_width: 30
+    # Доля ширины экрана под левый список (0..1)
+    list_width_ratio: 0.5
+    # Минимальная ширина правого превью, иначе оно скрывается
+    preview_min_width: 10
+  text:
+    header: "Выбор чатов: ↑/↓ PgUp/PgDn Home/End | Space=выбрать | Enter=OK | f=фильтр | /=поиск по имени | c=очистить | v=только выбранные | J/K=порядок очереди | q/Esc=выход"
+    no_chats: "Нет доступных чатов"
+    no_selected: "Нет выбранных чатов"
+    search_prompt: "Поиск по имени: "
+  keys:
+    # Поддерживаются: enter, esc, space, up, down, pageup, pagedown, home, end, а также одиночные символы.
+    quit: ["q", "esc"]
+    confirm: ["enter"]
+    toggle: ["space"]
+    filter: ["f"]
+    search: ["/"]
+    clear: ["c"]
+    # Вид списка:
+    # - v: показать только выбранные чаты (в порядке очереди)
+    show_selected: ["v"]
+    up: ["up", "k"]
+    down: ["down", "j"]
+    page_up: ["pageup"]
+    page_down: ["pagedown"]
+    home: ["home"]
+    end: ["end"]
+    # Редактирование очереди (только для выбранных чатов):
+    # - K: поднять выбранный чат вверх в очереди
+    # - J: опустить выбранный чат вниз в очереди
+    move_up: ["K"]
+    move_down: ["J"]
+
 # Список чатов для загрузки (поддерживается несколько чатов)
 # Если не указано, будет предложен интерактивный выбор
 chats:
@@ -86,11 +181,13 @@ chats:
     last_read_message_id: 0
     ids_to_retry: []
     enabled: true
+    order: 0  # порядок в очереди загрузки (0-based). Если не задано — используется порядок в YAML.
   # - chat_id: 987654321
   #   title: "Другой чат"
   #   last_read_message_id: 0
   #   ids_to_retry: []
   #   enabled: true
+  #   order: 1
 
 # Старая структура (для обратной совместимости)
 # Если указан chat_id, он будет использован как единственный чат

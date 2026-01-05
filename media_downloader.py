@@ -3,7 +3,7 @@ import asyncio
 import logging
 import os
 from datetime import date, datetime, timezone
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from rich.logging import RichHandler
 from telethon import TelegramClient
@@ -600,6 +600,29 @@ class DownloadManager:
                 last_read_message_id = 0
                 ids_to_retry = []
 
+        # Если история включена, но файл архива отсутствует, можно принудительно пересоздать архив:
+        # сбрасываем last_read_message_id, чтобы заново пройти сообщения и записать JSONL/HTML.
+        download_settings = self.config.get("download_settings", {})
+        if (
+            self.history_manager is not None
+            and download_settings.get("history_rebuild_if_missing", False)
+            and isinstance(last_read_message_id, int)
+            and last_read_message_id > 0
+        ):
+            try:
+                ext = "txt" if self.history_manager.history_format == "txt" else "jsonl"
+                history_file = os.path.join(self.history_manager.history_path, f"chat_{chat_id}.{ext}")
+                if not os.path.exists(history_file):
+                    logger.warning(
+                        "История включена, но архив чата отсутствует (%s). "
+                        "Сбрасываю last_read_message_id и пересоздаю архив.",
+                        history_file,
+                    )
+                    last_read_message_id = 0
+            except Exception:
+                # Фолбэк: не ломаем загрузку из-за проблем с FS
+                pass
+
         try:
             messages_iter = client.iter_messages(
                 chat_id, min_id=last_read_message_id + 1, reverse=True
@@ -703,36 +726,53 @@ async def main_async():
 
     # Выбор чатов
     language = config.get("language", "ru")
-    chat_selector = ChatSelector(client, language)
+    chat_selector = ChatSelector(client, language, tui_config=config.get("tui"))
+    chat_selection_ui = config.get("chat_selection_ui", "classic")
 
     # Проверить, есть ли сохраненные чаты в конфиге
     selected_chats = []
     if "chats" in config and isinstance(config["chats"], list):
-        # Использовать сохраненные чаты
-        enabled_chats = [
-            (c["chat_id"], c.get("title", ""), "saved")
-            for c in config["chats"]
-            if c.get("enabled", True)
-        ]
-        if enabled_chats:
-            use_saved = True
-            if config.get("interactive_chat_selection", True):
-                from rich.prompt import Confirm
-                use_saved = Confirm.ask(
-                    "Использовать сохраненные чаты?", default=True
+        enabled_entries = [c for c in config["chats"] if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c]
+        # Если есть order хотя бы у одного — сортируем очередь по нему, иначе сохраняем порядок из YAML
+        if any("order" in c for c in enabled_entries):
+            enabled_entries.sort(key=lambda c: int(c.get("order", 10**9)) if str(c.get("order", "")).lstrip("-").isdigit() else 10**9)
+
+        enabled_chats = [(c["chat_id"], c.get("title", ""), "saved") for c in enabled_entries]
+        preselected_ids: Set[int] = {c["chat_id"] for c in enabled_entries}
+        preselected_order: List[int] = [c["chat_id"] for c in enabled_entries]
+
+        if enabled_chats and not config.get("interactive_chat_selection", True):
+            selected_chats = enabled_chats
+        elif enabled_chats and config.get("interactive_chat_selection", True):
+            from rich.prompt import Confirm
+
+            edit = Confirm.ask("Редактировать список чатов?", default=False)
+            if edit:
+                selected_chats = await chat_selector.select_chats(
+                    allow_multiple=True,
+                    ui=chat_selection_ui,
+                    preselected_chat_ids=preselected_ids,
+                    preselected_chat_id_order=preselected_order,
                 )
-            if use_saved:
-                selected_chats = enabled_chats
             else:
-                selected_chats = await chat_selector.select_chats(allow_multiple=True)
+                selected_chats = enabled_chats
         else:
-            selected_chats = await chat_selector.select_chats(allow_multiple=True)
+            selected_chats = await chat_selector.select_chats(
+                allow_multiple=True,
+                ui=chat_selection_ui,
+                preselected_chat_ids=preselected_ids,
+                preselected_chat_id_order=preselected_order,
+            )
     elif config.get("chat_id"):
         # Старая структура - один чат
         selected_chats = [(config["chat_id"], "", "single")]
     else:
         # Интерактивный выбор
-        selected_chats = await chat_selector.select_chats(allow_multiple=True)
+        selected_chats = await chat_selector.select_chats(
+            allow_multiple=True,
+            ui=chat_selection_ui,
+            preselected_chat_ids=None,
+        )
 
     if not selected_chats:
         logger.warning("Не выбрано ни одного чата для загрузки")
@@ -740,29 +780,25 @@ async def main_async():
         return
 
     # Сохранить выбранные чаты в конфиг
-    if not ("chats" in config and isinstance(config["chats"], list)):
-        config["chats"] = []
-
-    for chat_id, title, _ in selected_chats:
-        # Проверить, есть ли уже этот чат в конфиге
-        existing_chat = next(
-            (c for c in config["chats"] if c.get("chat_id") == chat_id), None
-        )
-        if not existing_chat:
-            config["chats"].append({
-                "chat_id": chat_id,
-                "title": title,
-                "last_read_message_id": 0,
-                "ids_to_retry": [],
-                "enabled": True,
-            })
-    config_manager.save(config)
+    config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
+    config_manager.save()
 
     # Загрузить для каждого выбранного чата
     download_manager = DownloadManager(config_manager)
     pagination_limit = config.get("download_settings", {}).get("pagination_limit", 100)
 
-    for chat_id, chat_title, _ in selected_chats:
+    # Очередь загрузки: берём из конфига (с учётом order), чтобы порядок был стабильным и редактируемым
+    cfg_after = config_manager.config
+    queue_entries = [
+        c for c in cfg_after.get("chats", [])
+        if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c
+    ]
+    if any("order" in c for c in queue_entries):
+        queue_entries.sort(key=lambda c: int(c.get("order", 10**9)) if str(c.get("order", "")).lstrip("-").isdigit() else 10**9)
+
+    for c in queue_entries:
+        chat_id = c["chat_id"]
+        chat_title = c.get("title", "")
         logger.info(f"Начало загрузки для чата: {chat_title or chat_id}")
         # Временно установить chat_id для этого чата
         download_manager.config["chat_id"] = chat_id
