@@ -974,7 +974,14 @@ class ChatSelector:
                 out.add(spec)
                 return out
 
-            key = str(spec).strip().lower()
+            raw = str(spec).strip()
+            # Важно: одиночные символы должны быть регистрозависимыми.
+            # Например, "K" (Shift+K) -> ord("K") != ord("k").
+            if len(raw) == 1:
+                out.add(ord(raw))
+                return out
+
+            key = raw.lower()
             if key == "enter":
                 out |= {10, 13}
             elif key == "esc":
@@ -993,8 +1000,6 @@ class ChatSelector:
                 out.add(curses.KEY_HOME)
             elif key == "end":
                 out.add(curses.KEY_END)
-            elif len(key) == 1:
-                out.add(ord(key))
             return out
 
         keymap = {
