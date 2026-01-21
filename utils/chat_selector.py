@@ -945,8 +945,13 @@ class ChatSelector:
                         elif ch == curses.KEY_END:
                             cursor_pos = len(buf)
                     elif isinstance(ch, str):
+                        # get_wch() может вернуть Enter/ESC как строку
+                        if ch in ("\n", "\r"):  # Enter
+                            break
+                        elif ch == "\x1b":  # ESC
+                            return initial
                         # Обычный символ (включая UTF-8 многобайтовые)
-                        if ch.isprintable():
+                        elif ch.isprintable():
                             buf.insert(cursor_pos, ch)
                             cursor_pos += 1
 
