@@ -962,6 +962,13 @@ class ChatSelector:
                     stdscr.timeout(0)
                 except Exception:
                     pass
+                # Очистить строку ввода после завершения
+                try:
+                    stdscr.move(y, 0)
+                    stdscr.clrtoeol()
+                    stdscr.refresh()
+                except Exception:
+                    pass
 
         def _color_to_curses(color_name: Any) -> int:
             name = str(color_name).strip().lower()
