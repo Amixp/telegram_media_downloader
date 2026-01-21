@@ -8,6 +8,7 @@ import sys
 import textwrap
 import time
 import unicodedata
+import locale
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -857,23 +858,19 @@ class ChatSelector:
 
         def _prompt_input(stdscr, prompt: str, initial: str = "") -> str:  # noqa: ANN001
             """
-            Простой ввод строки внизу экрана.
+            Простой ввод строки внизу экрана с поддержкой UTF-8 (русские буквы).
 
-            Используем curses.textpad.Textbox: видимый курсор + базовое редактирование.
+            Использует get_wch() для корректной работы с многобайтовыми символами.
             """
-            import curses.textpad  # локально: на Windows может отсутствовать curses
-
             height, width = stdscr.getmaxyx()
             y = height - 1
-            stdscr.move(y, 0)
-            stdscr.clrtoeol()
             prompt_s = str(prompt or "")
-            stdscr.addstr(y, 0, _truncate(prompt_s, max(0, width - 1)))
-            stdscr.refresh()
+            x0 = min(len(prompt_s), max(0, width - 1))
+            edit_w = max(0, width - x0 - 1)
+            if edit_w <= 0:
+                return initial
 
-            # Важно: основное окно работает в non-blocking режиме (nodelay/timeout(0)).
-            # Для ввода строки нужно временно перейти в blocking режим, иначе getstr()
-            # может "мгновенно" вернуть пустую строку и промпт будет мигать.
+            # Переключаем в blocking режим для ввода
             try:
                 stdscr.nodelay(False)
                 stdscr.timeout(-1)
@@ -881,45 +878,80 @@ class ChatSelector:
                 pass
 
             try:
-                # Показать курсор на время ввода
+                # Показать курсор
                 try:
                     curses.curs_set(1)
                 except Exception:
                     pass
 
-                x0 = min(len(prompt_s), max(0, width - 1))
-                edit_w = max(0, width - x0 - 1)
-                if edit_w <= 0:
-                    return initial
+                # Буфер редактирования
+                buf = list(initial or "")
+                cursor_pos = len(buf)
 
-                win = curses.newwin(1, edit_w, y, x0)
-                win.keypad(True)
-                win.erase()
-                init = (initial or "")[: max(0, edit_w - 1)]
-                try:
-                    win.addstr(0, 0, init)
-                except Exception:
-                    pass
-                try:
-                    win.move(0, min(len(init), max(0, edit_w - 1)))
-                except Exception:
-                    pass
+                while True:
+                    # Отрисовка
+                    stdscr.move(y, 0)
+                    stdscr.clrtoeol()
+                    stdscr.addstr(y, 0, _truncate(prompt_s, max(0, width - 1)))
+                    
+                    # Показываем текст с учётом ширины
+                    visible_text = "".join(buf)[: max(0, edit_w - 1)]
+                    try:
+                        stdscr.addstr(y, x0, visible_text)
+                    except Exception:
+                        pass
+                    
+                    # Позиционируем курсор
+                    cursor_x = x0 + min(cursor_pos, len(visible_text))
+                    try:
+                        stdscr.move(y, cursor_x)
+                    except Exception:
+                        pass
+                    stdscr.refresh()
 
-                cancelled = False
+                    # Читаем символ (get_wch поддерживает UTF-8)
+                    try:
+                        ch = stdscr.get_wch()
+                    except Exception:
+                        # Фолбэк на getch при ошибках
+                        try:
+                            ch_code = stdscr.getch()
+                            if ch_code == -1:
+                                continue
+                            ch = ch_code
+                        except Exception:
+                            continue
 
-                def _validator(ch: int) -> int:
-                    nonlocal cancelled
-                    if ch in (10, 13):  # Enter
-                        return 7  # Ctrl-G (end editing)
-                    if ch == 27:  # ESC
-                        cancelled = True
-                        return 7
-                    return ch
+                    # Обработка специальных клавиш
+                    if isinstance(ch, int):
+                        # KEY_ константы или коды управляющих символов
+                        if ch in (10, 13):  # Enter
+                            break
+                        elif ch == 27:  # ESC
+                            return initial
+                        elif ch in (curses.KEY_BACKSPACE, 127, 8):  # Backspace
+                            if cursor_pos > 0:
+                                buf.pop(cursor_pos - 1)
+                                cursor_pos -= 1
+                        elif ch == curses.KEY_DC:  # Delete
+                            if cursor_pos < len(buf):
+                                buf.pop(cursor_pos)
+                        elif ch == curses.KEY_LEFT:
+                            cursor_pos = max(0, cursor_pos - 1)
+                        elif ch == curses.KEY_RIGHT:
+                            cursor_pos = min(len(buf), cursor_pos + 1)
+                        elif ch == curses.KEY_HOME:
+                            cursor_pos = 0
+                        elif ch == curses.KEY_END:
+                            cursor_pos = len(buf)
+                    elif isinstance(ch, str):
+                        # Обычный символ (включая UTF-8 многобайтовые)
+                        if ch.isprintable():
+                            buf.insert(cursor_pos, ch)
+                            cursor_pos += 1
 
-                tb = curses.textpad.Textbox(win, insert_mode=True)
-                raw = tb.edit(_validator)
-                if cancelled:
-                    return initial
+                return "".join(buf).strip()
+
             finally:
                 try:
                     curses.curs_set(0)
@@ -930,14 +962,6 @@ class ChatSelector:
                     stdscr.timeout(0)
                 except Exception:
                     pass
-            try:
-                if isinstance(raw, bytes):
-                    s = raw.decode("utf-8", errors="replace")
-                else:
-                    s = str(raw)
-                return s.strip()
-            except Exception:
-                return str(raw).strip()
 
         def _color_to_curses(color_name: Any) -> int:
             name = str(color_name).strip().lower()
@@ -1483,6 +1507,11 @@ class ChatSelector:
         List[Tuple[int, str, str]]
             Список выбранных чатов.
         """
+        # Включаем локаль по умолчанию, чтобы curses принимал UTF-8 (русские буквы в поиске).
+        try:
+            locale.setlocale(locale.LC_ALL, "")
+        except Exception:
+            pass
         self.console.print("[bold cyan]Получение списка чатов...[/bold cyan]")
         if ui == "tui":
             items = await self.get_available_chat_items()
