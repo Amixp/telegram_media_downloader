@@ -386,9 +386,9 @@ class MediaDownloaderTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
         history_dir = os.path.join(tmpdir, "history")
         os.makedirs(history_dir, exist_ok=True)
-        # Создать пустой JSONL как "архив существует"
+        # Создать валидный JSONL (хотя бы одна строка) — иначе жёсткая проверка отклонит
         with open(os.path.join(history_dir, "chat_123456.jsonl"), "w", encoding="utf-8") as f:
-            f.write("")
+            f.write('{"id": 1, "text": "ok"}\n')
 
         cfg_path = os.path.join(tmpdir, "config.yaml")
         cfg = {

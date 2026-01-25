@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 from rich.logging import RichHandler
 from telethon import TelegramClient
-from telethon.errors import FileReferenceExpiredError
+from telethon.errors import FileMigrateError, FileReferenceExpiredError
 from telethon.tl.types import (
     Document,
     Message,
@@ -27,6 +27,7 @@ from utils.log import LogFilter, configure_logging
 from utils.meta import APP_VERSION, DEVICE_MODEL, LANG_CODE, SYSTEM_VERSION, print_meta
 from utils.proxy import get_proxy_config
 from utils.updates import check_for_updates
+from utils.validation import validate_archive_file, validate_downloaded_media
 
 logging.basicConfig(
     level=logging.INFO,
@@ -346,15 +347,29 @@ class DownloadManager:
                         )  # type: ignore
 
                     if download_path:
-                        logger.info(self.i18n.t("downloaded", path=download_path))
-                        logger.debug("Успешно загружено сообщение %s", message.id)
-                        # Сохранить путь к файлу с ключом (chat_id, message_id)
-                        # чтобы избежать коллизий между чатами
                         chat_id = message.chat.id if message.chat else 0
-                        self.downloaded_files[(chat_id, message.id)] = download_path
-                    # Сохранить ID с контекстом чата для корректного retry механизма
-                    chat_id = message.chat.id if message.chat else 0
-                    self.downloaded_ids.append((chat_id, message.id))
+                        validate_downloads = self.config.get("download_settings", {}).get(
+                            "validate_downloads", True
+                        )
+                        if validate_downloads and not validate_downloaded_media(
+                            download_path,
+                            _type,
+                            file_size if file_size else None,
+                            check_signature=True,
+                        ):
+                            logger.warning(
+                                self.i18n.t(
+                                    "validation_failed_media",
+                                    path=download_path,
+                                    id=message.id,
+                                )
+                            )
+                            self.failed_ids.append((chat_id, message.id))
+                        else:
+                            logger.info(self.i18n.t("downloaded", path=download_path))
+                            logger.debug("Успешно загружено сообщение %s", message.id)
+                            self.downloaded_files[(chat_id, message.id)] = download_path
+                            self.downloaded_ids.append((chat_id, message.id))
                 break
             except FileReferenceExpiredError:
                 logger.warning(
@@ -379,6 +394,38 @@ class DownloadManager:
                     )
                     chat_id = message.chat.id if message.chat else 0
                     self.failed_ids.append((chat_id, message.id))
+            except FileMigrateError as e:
+                # Файл в другом DC, переключение может занять время
+                dc_num = getattr(e, "new_dc", "?")
+                logger.warning(
+                    self.i18n.t("file_migrate_error", id=message.id, dc=dc_num)
+                )
+                # Увеличенная задержка для переключения DC (10 сек)
+                await asyncio.sleep(10)
+                if retry == 2:
+                    logger.error(
+                        self.i18n.t("file_migrate_error_skip", id=message.id, dc=dc_num)
+                    )
+                    chat_id = message.chat.id if message.chat else 0
+                    self.failed_ids.append((chat_id, message.id))
+            except (asyncio.IncompleteReadError, ConnectionError, OSError) as e:
+                # Обрыв соединения при переключении DC или сетевые проблемы
+                error_str = str(e)
+                if "bytes read" in error_str or "connection" in error_str.lower():
+                    logger.warning(
+                        self.i18n.t("connection_error", id=message.id, error=error_str)
+                    )
+                    # Увеличенная задержка для восстановления соединения
+                    await asyncio.sleep(10)
+                    if retry == 2:
+                        logger.error(
+                            self.i18n.t("connection_error_skip", id=message.id, error=error_str)
+                        )
+                        chat_id = message.chat.id if message.chat else 0
+                        self.failed_ids.append((chat_id, message.id))
+                else:
+                    # Другие OSError/ConnectionError - пробрасываем в общий Exception handler
+                    raise
             except Exception as e:
                 logger.error(
                     self.i18n.t("download_exception", id=message.id, error=str(e)),
@@ -600,8 +647,8 @@ class DownloadManager:
                 last_read_message_id = 0
                 ids_to_retry = []
 
-        # Если история включена, но файл архива отсутствует, можно принудительно пересоздать архив:
-        # сбрасываем last_read_message_id, чтобы заново пройти сообщения и записать JSONL/HTML.
+        # Если история включена, но файл архива отсутствует или не проходит жёсткую проверку,
+        # сбрасываем last_read_message_id и пересоздаём архив.
         download_settings = self.config.get("download_settings", {})
         if (
             self.history_manager is not None
@@ -612,9 +659,15 @@ class DownloadManager:
             try:
                 ext = "txt" if self.history_manager.history_format == "txt" else "jsonl"
                 history_file = os.path.join(self.history_manager.history_path, f"chat_{chat_id}.{ext}")
-                if not os.path.exists(history_file):
+                validate_archives = download_settings.get("validate_archives", True)
+                archive_ok = os.path.exists(history_file)
+                if archive_ok and validate_archives:
+                    archive_ok = validate_archive_file(
+                        history_file, "txt" if ext == "txt" else "jsonl"
+                    )
+                if not archive_ok:
                     logger.warning(
-                        "История включена, но архив чата отсутствует (%s). "
+                        "История включена, но архив чата отсутствует или не прошёл проверку (%s). "
                         "Сбрасываю last_read_message_id и пересоздаю архив.",
                         history_file,
                     )

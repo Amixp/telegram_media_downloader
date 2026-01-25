@@ -27,6 +27,10 @@ download_settings:
   # принудительно сбрасывать last_read_message_id и пересоздавать архив заново.
   # Полезно если вы удалили папку history/ или переносили архив, а в config.yaml остались "хвосты".
   history_rebuild_if_missing: false
+  # Жёсткая проверка скачанных медиа (существует, размер, для video — magic bytes). При провале — в ids_to_retry.
+  validate_downloads: true
+  # При history_rebuild_if_missing также проверять валидность архива (JSONL/TXT). Битый — пересоздать.
+  validate_archives: true
 
 # Типы медиа для загрузки
 # Можно указать конкретные типы или "all" для всех типов
