@@ -1,11 +1,23 @@
 """Модуль для сохранения истории сообщений."""
 import html
 import json
+import logging
 import os
+import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from telethon.tl.types import Message, MessageMediaDocument, MessageMediaPhoto
+
+from utils.validation import validate_archive_file
+
+logger = logging.getLogger(__name__)
+
+
+def _archive_chat_id_for_path(chat_id: int) -> int:
+    """ID чата для путей архива: приоритет без минуса (abs)."""
+    return abs(chat_id)
 
 
 class MessageHistory:
@@ -16,6 +28,7 @@ class MessageHistory:
         base_directory: str,
         history_format: str = "json",
         history_directory: str = "history",
+        config_manager: Optional[Any] = None,
     ):
         """
         Инициализация MessageHistory.
@@ -28,6 +41,8 @@ class MessageHistory:
             Формат сохранения ('json', 'txt' или 'html').
         history_directory: str
             Имя директории для истории внутри базовой директории.
+        config_manager: Optional[Any]
+            Менеджер конфигурации для добавления чатов из ссылок.
         """
         self.base_directory = base_directory
         self.history_format = history_format.lower()
@@ -36,6 +51,8 @@ class MessageHistory:
         os.makedirs(self.history_path, exist_ok=True)
         self.chats_info: Dict[int, Dict[str, Any]] = {}  # Информация о чатах для индекса
         self._index_manifest_file = os.path.join(self.history_path, "index.json")
+        self.config_manager = config_manager
+        self._found_chat_ids: Set[int] = set()  # Найденные chat_id из ссылок
 
     def save_message(
         self,
@@ -70,7 +87,7 @@ class MessageHistory:
         if message.date:
             self.chats_info[chat_id]["last_message_date"] = message.date
 
-        if self.history_format == "json":
+        if self.history_format in ("json", "jsonl"):
             self._save_json(message, chat_id, chat_title, downloaded_file_path)
         elif self.history_format == "html":
             self._save_html_message(message, chat_id, chat_title, downloaded_file_path)
@@ -98,7 +115,7 @@ class MessageHistory:
         downloaded_file_path: Optional[str]
             Путь к скачанному файлу.
         """
-        chat_file = os.path.join(self.history_path, f"chat_{chat_id}.jsonl")
+        chat_file = os.path.join(self.history_path, f"chat_{_archive_chat_id_for_path(chat_id)}.jsonl")
         message_data: Dict[str, Any] = {
             "id": message.id,
             "date": message.date.isoformat() if message.date else None,
@@ -178,7 +195,7 @@ class MessageHistory:
         downloaded_file_path: Optional[str]
             Путь к скачанному файлу.
         """
-        chat_file = os.path.join(self.history_path, f"chat_{chat_id}.txt")
+        chat_file = os.path.join(self.history_path, f"chat_{_archive_chat_id_for_path(chat_id)}.txt")
         date_str = message.date.strftime("%Y-%m-%d %H-%M-%S") if message.date else "Unknown"
         text = message.message or "[Без текста]"
         media_info = ""
@@ -322,6 +339,60 @@ class MessageHistory:
 
         return max_size if max_size > 0 else None
 
+    def _check_archive_duplicates(
+        self, archive_path: str, message_ids: List[int], fmt: str
+    ) -> bool:
+        """
+        Проверить, есть ли все сообщения уже в архиве (проверка дублей).
+
+        Parameters
+        ----------
+        archive_path: str
+            Путь к архиву.
+        message_ids: List[int]
+            Список ID сообщений для проверки.
+        fmt: str
+            Формат архива ("jsonl" или "txt").
+
+        Returns
+        -------
+        bool
+            True, если все сообщения уже есть в архиве (можно пропустить сохранение).
+        """
+        if not os.path.exists(archive_path):
+            return False
+
+        # Проверить валидность архива
+        if not validate_archive_file(archive_path, fmt):
+            return False
+
+        if not message_ids:
+            return True
+
+        # Для JSONL: проверить наличие всех ID
+        if fmt == "jsonl":
+            existing_ids: set = set()
+            try:
+                with open(archive_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                            if isinstance(obj, dict) and "id" in obj:
+                                existing_ids.add(obj["id"])
+                        except Exception:
+                            continue
+            except Exception:
+                return False
+
+            # Если все ID уже есть в архиве - дубли
+            return all(msg_id in existing_ids for msg_id in message_ids)
+
+        # Для TXT: не можем точно проверить, считаем что нужно сохранить
+        return False
+
     def save_batch(
         self,
         messages: List[Message],
@@ -344,9 +415,41 @@ class MessageHistory:
             Словарь {message_id: file_path} для скачанных файлов.
         """
         downloaded_files = downloaded_files or {}
+        ext = "txt" if self.history_format == "txt" else "jsonl"
+        path_id = _archive_chat_id_for_path(chat_id)
+        archive_path = os.path.join(self.history_path, f"chat_{path_id}.{ext}")
+
+        # Проверка дублей: если все сообщения уже есть в архиве, пропустить сохранение
+        message_ids = [msg.id for msg in messages]
+        if self._check_archive_duplicates(archive_path, message_ids, ext):
+            logger.info(
+                "Архив чата уже содержит все сообщения: chat_id=%s, path=%s, сообщений=%s (пропуск сохранения)",
+                chat_id,
+                archive_path,
+                len(messages),
+            )
+            # Всё равно обновить индекс HTML, если нужно
+            if self.history_format == "html":
+                self._generate_index_html()
+            return
+
+        logger.info(
+            "Сохранение архива чата: chat_id=%s, path=%s, сообщений=%s",
+            chat_id,
+            archive_path,
+            len(messages),
+        )
         for message in messages:
             file_path = downloaded_files.get(message.id)
             self.save_message(message, chat_id, chat_title, file_path)
+        logger.info(
+            "Архив чата сохранён: chat_id=%s, path=%s",
+            chat_id,
+            archive_path,
+        )
+
+        # Добавить найденные чаты из ссылок в список загрузок
+        self._add_found_chats_to_config()
 
         # Создать/обновить индексный HTML файл после сохранения пакета
         if self.history_format == "html":
@@ -373,8 +476,8 @@ class MessageHistory:
         downloaded_file_path: Optional[str]
             Путь к скачанному файлу.
         """
-        # Сохраняем в JSON для последующей генерации HTML
-        chat_file = os.path.join(self.history_path, f"chat_{chat_id}.jsonl")
+        # Сохраняем в JSON для последующей генерации HTML (путь без минуса)
+        chat_file = os.path.join(self.history_path, f"chat_{_archive_chat_id_for_path(chat_id)}.jsonl")
         message_data: Dict[str, Any] = {
             "id": message.id,
             "date": message.date.isoformat() if message.date else None,
@@ -388,6 +491,29 @@ class MessageHistory:
             "reply_to_msg_id": message.reply_to_msg_id if message.reply_to else None,
             "edit_date": message.edit_date.isoformat() if message.edit_date else None,
         }
+
+        # Сохранить entities (форматирование текста, ссылки)
+        if hasattr(message, "entities") and message.entities:
+            entities_data = []
+            for entity in message.entities:
+                entity_dict = {
+                    "offset": entity.offset,
+                    "length": entity.length,
+                }
+                # Сохранить тип entity
+                entity_type = type(entity).__name__
+                entity_dict["type"] = entity_type
+                
+                # Для MessageEntityTextUrl сохранить URL
+                if hasattr(entity, "url"):
+                    entity_dict["url"] = entity.url
+                
+                # Для MessageEntityMentionName сохранить user_id
+                if hasattr(entity, "user_id"):
+                    entity_dict["user_id"] = entity.user_id
+                
+                entities_data.append(entity_dict)
+            message_data["entities"] = entities_data
 
         if message.media:
             media_info = self._extract_media_info(message)
@@ -408,7 +534,8 @@ class MessageHistory:
         chat_id: int
             ID чата.
         """
-        jsonl_file = os.path.join(self.history_path, f"chat_{chat_id}.jsonl")
+        path_id = _archive_chat_id_for_path(chat_id)
+        jsonl_file = os.path.join(self.history_path, f"chat_{path_id}.jsonl")
         if not os.path.exists(jsonl_file):
             return
 
@@ -432,7 +559,7 @@ class MessageHistory:
 
         # Использовать 'or' вместо default, чтобы обработать None значения
         chat_title = messages[0].get("chat_title") or f"Чат {chat_id}"
-        html_file = os.path.join(self.history_path, f"chat_{chat_id}.html")
+        html_file = os.path.join(self.history_path, f"chat_{path_id}.html")
 
         html_content = self._get_html_template(chat_title, messages)
 
@@ -648,6 +775,47 @@ class MessageHistory:
             text-decoration: underline;
         }}
 
+        .message-hashtag {{
+            color: var(--accent-color);
+        }}
+
+        .message-spoiler {{
+            background: var(--text-color);
+            color: var(--text-color);
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.2s, color 0.2s;
+        }}
+
+        .message-spoiler.revealed {{
+            background: transparent;
+            color: var(--text-color);
+        }}
+
+        .message-text code {{
+            background: var(--border-color);
+            padding: 2px 4px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }}
+
+        .message-text pre {{
+            background: var(--border-color);
+            padding: 8px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }}
+
+        .message-text blockquote {{
+            border-left: 3px solid var(--accent-color);
+            padding-left: 12px;
+            margin: 4px 0;
+            color: var(--text-secondary);
+        }}
+
         .media-preview {{
             margin: 4px 0;
             border-radius: 8px;
@@ -846,10 +1014,25 @@ class MessageHistory:
             }});
         }}
 
-        // Автоматическая прокрутка вниз при загрузке
+        // Автоматическая прокрутка к якорю или вниз при загрузке
         window.addEventListener('load', () => {{
-            const container = document.querySelector('.messages');
-            container.scrollTop = container.scrollHeight;
+            const hash = window.location.hash;
+            if (hash) {{
+                const targetElement = document.querySelector(hash);
+                if (targetElement) {{
+                    targetElement.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                    // Подсветить сообщение
+                    targetElement.style.backgroundColor = 'var(--accent-color)';
+                    targetElement.style.opacity = '0.8';
+                    setTimeout(() => {{
+                        targetElement.style.backgroundColor = '';
+                        targetElement.style.opacity = '';
+                    }}, 2000);
+                }}
+            }} else {{
+                const container = document.querySelector('.messages');
+                container.scrollTop = container.scrollHeight;
+            }}
         }});
     </script>
 </body>
@@ -959,13 +1142,16 @@ class MessageHistory:
         # Текст сообщения
         text_html = ""
         if text:
-            # Конвертировать ссылки в кликабельные
-            text_escaped = html.escape(text)
-            import re
-            # Простая замена URL
-            url_pattern = r'(https?://[^\s]+)'
-            text_escaped = re.sub(url_pattern, r'<a href="\1" target="_blank" class="message-link">\1</a>', text_escaped)
-            text_html = f'<div class="message-text">{text_escaped}</div>'
+            # Обработать entities, если есть
+            entities = msg.get("entities", [])
+            if entities:
+                text_html = f'<div class="message-text">{self._format_text_with_entities(text, entities, msg.get("chat_id"))}</div>'
+            else:
+                # Fallback: простая обработка URL через regex
+                text_escaped = html.escape(text)
+                url_pattern = r'(https?://[^\s]+)'
+                text_escaped = re.sub(url_pattern, r'<a href="\1" target="_blank" class="message-link">\1</a>', text_escaped)
+                text_html = f'<div class="message-text">{text_escaped}</div>'
 
         # Мета информация
         meta_parts = []
@@ -986,7 +1172,7 @@ class MessageHistory:
             reply_html = f'<div class="message-reply">↩️ Ответ на сообщение #{msg["reply_to_msg_id"]}</div>'
 
         return f'''
-        <div class="message-bubble" data-message-id="{msg_id}">
+        <div class="message-bubble" id="message-{msg_id}" data-message-id="{msg_id}">
             {reply_html}
             {media_html}
             {text_html}
@@ -996,6 +1182,315 @@ class MessageHistory:
             </div>
         </div>
         '''
+
+    def _format_text_with_entities(self, text: str, entities: List[Dict[str, Any]], current_chat_id: Optional[int] = None) -> str:
+        """
+        Форматировать текст с учётом entities (ссылки, форматирование).
+
+        Parameters
+        ----------
+        text: str
+            Текст сообщения.
+        entities: List[Dict[str, Any]]
+            Список entities из сообщения.
+        current_chat_id: Optional[int]
+            ID текущего чата (для обработки ссылок на сообщения).
+
+        Returns
+        -------
+        str
+            HTML-форматированный текст.
+        """
+        if not entities:
+            # Fallback: простая обработка URL через regex
+            text_escaped = html.escape(text)
+            url_pattern = r'(https?://[^\s]+|tg://[^\s]+)'
+            def replace_url_fallback(match):
+                url = match.group(1)
+                # Извлечь chat_id для добавления в список загрузок
+                extracted_chat_id = self._extract_chat_id_from_link(url)
+                if extracted_chat_id and extracted_chat_id != current_chat_id:
+                    self._found_chat_ids.add(extracted_chat_id)
+                converted_url = self._convert_telegram_link(url, current_chat_id)
+                return f'<a href="{html.escape(converted_url)}" target="_blank" class="message-link">{html.escape(url)}</a>'
+            text_escaped = re.sub(url_pattern, replace_url_fallback, text_escaped)
+            return text_escaped
+
+        # Определить, какие части текста обработаны через entities
+        processed_ranges = set()
+        for entity in entities:
+            offset = entity.get("offset", 0)
+            length = entity.get("length", 0)
+            entity_type = entity.get("type", "")
+            # Если это URL entity, отметить диапазон как обработанный
+            if entity_type in ("MessageEntityUrl", "MessageEntityTextUrl"):
+                for i in range(offset, offset + length):
+                    processed_ranges.add(i)
+
+        # Обработать URL, которые не были обработаны через entities (до обработки entities)
+        url_pattern = r'(https?://[^\s<>"]+|tg://[^\s<>"]+)'
+        url_matches = list(re.finditer(url_pattern, text))
+        text_with_urls = text
+        offset_adjustments = []  # Список (позиция, смещение) для корректировки индексов entities
+        
+        for match in reversed(url_matches):  # Обрабатываем с конца
+            start, end = match.span()
+            # Проверить, не обработан ли этот URL через entities
+            if any(i in processed_ranges for i in range(start, end)):
+                continue
+            
+            url = match.group(1)
+            # Извлечь chat_id для добавления в список загрузок
+            extracted_chat_id = self._extract_chat_id_from_link(url)
+            if extracted_chat_id and extracted_chat_id != current_chat_id:
+                self._found_chat_ids.add(extracted_chat_id)
+            converted_url = self._convert_telegram_link(url, current_chat_id)
+            replacement = f'<a href="{html.escape(converted_url)}" target="_blank" class="message-link">{html.escape(url)}</a>'
+            # Вставить ссылку в текст
+            text_with_urls = text_with_urls[:start] + replacement + text_with_urls[end:]
+            # Сохранить информацию о смещении для корректировки индексов entities
+            offset_adjustments.append((start, len(replacement) - (end - start)))
+
+        # Скорректировать индексы entities после вставки URL
+        adjusted_entities = []
+        for entity in entities:
+            entity_copy = entity.copy()
+            offset = entity.get("offset", 0)
+            # Применить все смещения, которые произошли до этой позиции
+            for adj_pos, adj_offset in offset_adjustments:
+                if adj_pos <= offset:
+                    offset += adj_offset
+            entity_copy["offset"] = offset
+            adjusted_entities.append(entity_copy)
+
+        # Сортировать entities по offset (с конца, чтобы не сбить индексы при замене)
+        sorted_entities = sorted(adjusted_entities, key=lambda e: (e.get("offset", 0), -e.get("length", 0)), reverse=True)
+        
+        result = text_with_urls
+        for entity in sorted_entities:
+            offset = entity.get("offset", 0)
+            length = entity.get("length", 0)
+            entity_type = entity.get("type", "")
+            
+            if offset + length > len(result):
+                continue
+            
+            entity_text = result[offset:offset + length]
+            entity_text_escaped = html.escape(entity_text)
+            
+            # Обработать разные типы entities
+            html_tag = None
+            href = None
+            css_class = "message-link"
+            
+            if entity_type == "MessageEntityUrl":
+                # Обычная URL ссылка
+                href = entity_text
+                # Извлечь chat_id для добавления в список загрузок
+                extracted_chat_id = self._extract_chat_id_from_link(href)
+                if extracted_chat_id and extracted_chat_id != current_chat_id:
+                    self._found_chat_ids.add(extracted_chat_id)
+                html_tag = f'<a href="{html.escape(href)}" target="_blank" class="{css_class}">{entity_text_escaped}</a>'
+            elif entity_type == "MessageEntityTextUrl":
+                # Текст с URL
+                url = entity.get("url", "")
+                if url:
+                    # Извлечь chat_id для добавления в список загрузок
+                    extracted_chat_id = self._extract_chat_id_from_link(url)
+                    if extracted_chat_id and extracted_chat_id != current_chat_id:
+                        self._found_chat_ids.add(extracted_chat_id)
+                    # Обработать Telegram deep links
+                    href = self._convert_telegram_link(url, current_chat_id)
+                    html_tag = f'<a href="{html.escape(href)}" target="_blank" class="{css_class}">{entity_text_escaped}</a>'
+            elif entity_type == "MessageEntityMention":
+                # Упоминание (@username)
+                href = f"https://t.me/{entity_text.lstrip('@')}"
+                html_tag = f'<a href="{html.escape(href)}" target="_blank" class="{css_class}">{entity_text_escaped}</a>'
+            elif entity_type == "MessageEntityHashtag":
+                # Хештег
+                html_tag = f'<span class="message-hashtag">{entity_text_escaped}</span>'
+            elif entity_type == "MessageEntityBold":
+                html_tag = f'<strong>{entity_text_escaped}</strong>'
+            elif entity_type == "MessageEntityItalic":
+                html_tag = f'<em>{entity_text_escaped}</em>'
+            elif entity_type == "MessageEntityCode":
+                html_tag = f'<code>{entity_text_escaped}</code>'
+            elif entity_type == "MessageEntityPre":
+                html_tag = f'<pre>{entity_text_escaped}</pre>'
+            elif entity_type == "MessageEntityUnderline":
+                html_tag = f'<u>{entity_text_escaped}</u>'
+            elif entity_type == "MessageEntityStrike":
+                html_tag = f'<s>{entity_text_escaped}</s>'
+            elif entity_type == "MessageEntityBlockquote":
+                html_tag = f'<blockquote>{entity_text_escaped}</blockquote>'
+            elif entity_type == "MessageEntitySpoiler":
+                html_tag = f'<span class="message-spoiler" onclick="this.classList.toggle(\'revealed\')">{entity_text_escaped}</span>'
+            
+            if html_tag:
+                result = result[:offset] + html_tag + result[offset + length:]
+        
+        return result
+
+    def _extract_chat_id_from_link(self, url: str) -> Optional[int]:
+        """
+        Извлечь chat_id из Telegram ссылки.
+
+        Parameters
+        ----------
+        url: str
+            Исходная ссылка (tg:// или https://t.me/).
+
+        Returns
+        -------
+        Optional[int]
+            ID чата, если найден, иначе None.
+        """
+        # Обработать tg:// ссылки
+        if url.startswith("tg://"):
+            parsed = urlparse(url)
+            if parsed.scheme == "tg":
+                # tg://openmessage?chat_id=123&message_id=456
+                if parsed.netloc == "openmessage":
+                    params = parse_qs(parsed.query)
+                    chat_id = params.get("chat_id", [None])[0]
+                    if chat_id:
+                        try:
+                            return int(chat_id)
+                        except (ValueError, TypeError):
+                            pass
+        
+        # Обработать https://t.me/ ссылки
+        if url.startswith("https://t.me/") or url.startswith("http://t.me/"):
+            # https://t.me/c/chat_id/123
+            pattern = r'https?://t\.me/c/(-?\d+)/(\d+)'
+            match = re.match(pattern, url)
+            if match:
+                chat_id_str, _ = match.groups()
+                try:
+                    return int(chat_id_str)
+                except (ValueError, TypeError):
+                    pass
+        
+        return None
+
+    def _convert_telegram_link(self, url: str, current_chat_id: Optional[int] = None) -> str:
+        """
+        Преобразовать Telegram deep link в ссылку на архивный HTML файл.
+
+        Parameters
+        ----------
+        url: str
+            Исходная ссылка (tg:// или https://t.me/).
+        current_chat_id: Optional[int]
+            ID текущего чата.
+
+        Returns
+        -------
+        str
+            Преобразованная ссылка на архивный файл или исходная ссылка.
+        
+        Note
+        ----
+        Извлечение chat_id для добавления в список загрузок выполняется
+        отдельно в _format_text_with_entities, чтобы избежать дублирования.
+        """
+        
+        # Обработать tg:// ссылки
+        if url.startswith("tg://"):
+            parsed = urlparse(url)
+            if parsed.scheme == "tg":
+                # tg://resolve?domain=username&post=123
+                if parsed.netloc == "resolve":
+                    params = parse_qs(parsed.query)
+                    domain = params.get("domain", [None])[0]
+                    post = params.get("post", [None])[0]
+                    if domain and post:
+                        # Преобразовать в t.me ссылку для дальнейшей обработки
+                        url = f"https://t.me/{domain}/{post}"
+                # tg://openmessage?chat_id=123&message_id=456
+                elif parsed.netloc == "openmessage":
+                    params = parse_qs(parsed.query)
+                    chat_id = params.get("chat_id", [None])[0]
+                    message_id = params.get("message_id", [None])[0]
+                    if chat_id and message_id:
+                        try:
+                            chat_id_int = int(chat_id)
+                            # Создать ссылку на архивный HTML файл с якорем на сообщение
+                            path_id = _archive_chat_id_for_path(chat_id_int)
+                            archive_file = f"chat_{path_id}.html"
+                            return f"{archive_file}#message-{message_id}"
+                        except (ValueError, TypeError):
+                            pass
+        
+        # Обработать https://t.me/ ссылки
+        if url.startswith("https://t.me/") or url.startswith("http://t.me/"):
+            # https://t.me/username/123 или https://t.me/c/chat_id/123
+            pattern = r'https?://t\.me/(?:c/)?(-?\d+)/(\d+)'
+            match = re.match(pattern, url)
+            if match:
+                chat_id_str, message_id = match.groups()
+                try:
+                    chat_id_int = int(chat_id_str)
+                    path_id = _archive_chat_id_for_path(chat_id_int)
+                    archive_file = f"chat_{path_id}.html"
+                    return f"{archive_file}#message-{message_id}"
+                except (ValueError, TypeError):
+                    pass
+            
+            # https://t.me/username/123 (без /c/)
+            pattern = r'https?://t\.me/([^/]+)/(\d+)'
+            match = re.match(pattern, url)
+            if match:
+                username, message_id = match.groups()
+                # Для username ссылок пока оставляем исходную ссылку
+                # (можно расширить, если будет маппинг username -> chat_id)
+                return url
+        
+        # Для остальных ссылок вернуть исходную
+        return url
+
+    def _add_found_chats_to_config(self) -> None:
+        """
+        Добавить найденные чаты из ссылок в конфигурацию для дальнейшей загрузки.
+        """
+        if not self.config_manager or not self._found_chat_ids:
+            return
+
+        # Проверить, включена ли опция автоматического добавления
+        config = self.config_manager.config
+        download_settings = config.get("download_settings", {})
+        if not download_settings.get("auto_add_chats_from_links", False):
+            return
+
+        added_count = 0
+        for found_chat_id in self._found_chat_ids:
+            try:
+                was_added = self.config_manager.add_chat_to_download_list(found_chat_id)
+                if was_added:
+                    added_count += 1
+                    logger.info(
+                        "Добавлен чат из ссылки в список загрузок: chat_id=%s",
+                        found_chat_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Ошибка при добавлении чата %s в список загрузок: %s",
+                    found_chat_id,
+                    e,
+                )
+
+        if added_count > 0:
+            try:
+                self.config_manager.save()
+                logger.info(
+                    "Сохранено %s новых чатов в конфигурацию для дальнейшей загрузки",
+                    added_count,
+                )
+            except Exception as e:
+                logger.warning("Ошибка при сохранении конфигурации: %s", e)
+
+        # Очистить множество найденных chat_id после обработки
+        self._found_chat_ids.clear()
 
     def _format_file_size(self, size_bytes: int) -> str:
         """Форматировать размер файла."""
@@ -1103,8 +1598,9 @@ class MessageHistory:
             # Получить первую букву для аватара
             first_letter = title[0].upper() if title else "?"
 
-            # Если HTML для чата отсутствует — всё равно показываем карточку, но без клика
-            chat_href = f"chat_{chat_id}.html"
+            # Если HTML для чата отсутствует — всё равно показываем карточку, но без клика (путь без минуса)
+            path_id = _archive_chat_id_for_path(chat_id)
+            chat_href = f"chat_{path_id}.html"
             chat_html_path = os.path.join(self.history_path, chat_href)
             has_html = os.path.exists(chat_html_path)
             open_tag = (
@@ -1341,8 +1837,10 @@ class MessageHistory:
             f.write(html_content)
 
     def _chat_jsonl_exists(self, chat_id: int) -> bool:
-        """Проверить, существует ли JSONL файл чата."""
-        return os.path.exists(os.path.join(self.history_path, f"chat_{chat_id}.jsonl"))
+        """Проверить, существует ли JSONL файл чата (путь без минуса)."""
+        return os.path.exists(
+            os.path.join(self.history_path, f"chat_{_archive_chat_id_for_path(chat_id)}.jsonl")
+        )
 
     def _load_index_manifest(self) -> Dict[int, Dict[str, Any]]:
         """Загрузить манифест индекса (index.json) из истории."""
@@ -1393,11 +1891,13 @@ class MessageHistory:
 
     def _try_get_chat_meta_from_jsonl(self, chat_id: int) -> Optional[Tuple[str, int, Optional[datetime]]]:
         """
-        Попытаться получить метаданные чата из chat_{chat_id}.jsonl.
+        Попытаться получить метаданные чата из chat_{chat_id}.jsonl (путь без минуса).
 
         Возвращает (title, message_count, last_message_date).
         """
-        jsonl_path = os.path.join(self.history_path, f"chat_{chat_id}.jsonl")
+        jsonl_path = os.path.join(
+            self.history_path, f"chat_{_archive_chat_id_for_path(chat_id)}.jsonl"
+        )
         if not os.path.exists(jsonl_path):
             return None
 

@@ -72,7 +72,7 @@ class DownloadManager:
             base_dir = download_settings.get("base_directory") or THIS_DIR
             history_format = download_settings.get("history_format", "json")
             history_dir = download_settings.get("history_directory", "history")
-            self.history_manager = MessageHistory(base_dir, history_format, history_dir)
+            self.history_manager = MessageHistory(base_dir, history_format, history_dir, config_manager)
 
     def _can_download(
         self, _type: str, file_formats: dict, file_format: Optional[str]
@@ -115,6 +115,161 @@ class DownloadManager:
             True, если файл существует, иначе False.
         """
         return not os.path.isdir(file_path) and os.path.exists(file_path)
+
+    def _find_file_in_archive(
+        self, chat_id: int, file_name: str, file_size: Optional[int] = None
+    ) -> Optional[str]:
+        """
+        Найти файл в архиве чата по имени и размеру.
+
+        Parameters
+        ----------
+        chat_id: int
+            ID чата.
+        file_name: str
+            Имя файла (базовое имя, без пути).
+        file_size: Optional[int]
+            Размер файла в байтах.
+
+        Returns
+        -------
+        Optional[str]
+            Путь к найденному файлу из архива или None.
+        """
+        if not self.history_manager:
+            return None
+
+        try:
+            import json
+            from utils.history import _archive_chat_id_for_path
+
+            path_id = _archive_chat_id_for_path(chat_id)
+            ext = "txt" if self.history_manager.history_format == "txt" else "jsonl"
+            archive_path = os.path.join(
+                self.history_manager.history_path, f"chat_{path_id}.{ext}"
+            )
+
+            if not os.path.exists(archive_path):
+                return None
+
+            # Искать в JSONL архиве
+            if ext == "jsonl":
+                base_name = os.path.basename(file_name)
+                with open(archive_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                            if not isinstance(obj, dict):
+                                continue
+
+                            # Проверить имя файла
+                            archived_name = obj.get("file_name") or ""
+                            archived_path = obj.get("downloaded_file") or ""
+                            archived_size = obj.get("file_size")
+
+                            # Сравнить базовое имя файла
+                            archived_base = (
+                                os.path.basename(archived_path)
+                                if archived_path
+                                else os.path.basename(archived_name)
+                            )
+
+                            if archived_base and archived_base == base_name:
+                                # Если размер указан - проверить совпадение
+                                if file_size is not None and archived_size is not None:
+                                    if archived_size != file_size:
+                                        continue
+
+                                # Если есть путь к файлу - проверить существование
+                                if archived_path and os.path.exists(archived_path):
+                                    return archived_path
+
+                        except Exception:
+                            continue
+
+        except Exception:
+            pass
+
+        return None
+
+    def _check_existing_file(
+        self,
+        file_path: str,
+        media_type: str,
+        expected_size: Optional[int] = None,
+        chat_id: Optional[int] = None,
+        file_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Проверить существующий файл ДО скачивания.
+
+        Сначала проверяет файл по ожидаемому пути, затем ищет в архиве чата
+        по имени и размеру.
+
+        Если файл существует и валиден (размер, сигнатуры) - возвращает путь к нему,
+        иначе None (нужно скачивать).
+
+        Parameters
+        ----------
+        file_path: str
+            Ожидаемый путь к файлу.
+        media_type: str
+            Тип медиа (video, audio, photo, document и т.д.).
+        expected_size: Optional[int]
+            Ожидаемый размер файла в байтах.
+        chat_id: Optional[int]
+            ID чата (для поиска в архиве).
+        file_name: Optional[str]
+            Имя файла (для поиска в архиве по имени).
+
+        Returns
+        -------
+        Optional[str]
+            Путь к существующему валидному файлу или None.
+        """
+        # Сначала проверить файл по ожидаемому пути
+        if self._is_exist(file_path):
+            validate_downloads = self.config.get("download_settings", {}).get(
+                "validate_downloads", True
+            )
+            if validate_downloads:
+                if not validate_downloaded_media(
+                    file_path,
+                    media_type,
+                    expected_size,
+                    check_signature=True,
+                ):
+                    # Файл существует, но невалидный - нужно перескачать
+                    pass  # Продолжить поиск в архиве
+                else:
+                    # Файл существует и валиден - можно использовать
+                    return file_path
+
+        # Если файл не найден по пути, искать в архиве по имени и размеру
+        if chat_id is not None and file_name is not None:
+            archived_path = self._find_file_in_archive(
+                chat_id, file_name, expected_size
+            )
+            if archived_path and self._is_exist(archived_path):
+                validate_downloads = self.config.get("download_settings", {}).get(
+                    "validate_downloads", True
+                )
+                if validate_downloads:
+                    if not validate_downloaded_media(
+                        archived_path,
+                        media_type,
+                        expected_size,
+                        check_signature=True,
+                    ):
+                        # Файл из архива невалидный
+                        return None
+                # Файл из архива существует и валиден
+                return archived_path
+
+        return None
 
     def _progress_callback(self, current: int, total: int, pbar: tqdm) -> None:
         """
@@ -324,21 +479,47 @@ class DownloadManager:
                         "skip_duplicates", True
                     )
 
-                    if self._is_exist(file_name):
-                        file_name = get_next_name(file_name)
+                    # Использовать chat_id из конфига (установлен в begin_import_chat),
+                    # а не из message.chat.id, т.к. message.chat.id может быть без префикса -100
+                    # для супергрупп/каналов, а в конфиге хранится правильный chat_id с префиксом
+                    chat_id = self.config.get("chat_id", 0)
+                    if chat_id == 0:
+                        # Fallback: если chat_id не установлен в конфиге, использовать из сообщения
+                        chat_id = message.chat.id if message.chat else 0
 
-                    # Скачать файл
-                    with tqdm(
-                        total=file_size, unit="B", unit_scale=True, desc=desc
-                    ) as pbar:
-                        # pylint: disable=cell-var-from-loop
-                        download_path = await client.download_media(
-                            message,
-                            file=file_name,
-                            progress_callback=lambda c, t: self._progress_callback(
-                                c, t, pbar
-                            ),
+                    # Умный skip ДО скачивания: проверяем существующий файл
+                    # Сначала по пути, затем в архиве по имени и размеру
+                    base_file_name = os.path.basename(file_name)
+                    existing_file = self._check_existing_file(
+                        file_name,
+                        _type,
+                        file_size if file_size else None,
+                        chat_id=chat_id,
+                        file_name=base_file_name,
+                    )
+                    if existing_file:
+                        # Файл уже существует и валиден - пропускаем скачивание
+                        logger.info(
+                            self.i18n.t("file_already_exists", path=existing_file, id=message.id)
                         )
+                        download_path = existing_file
+                    else:
+                        # Файл отсутствует или невалиден - скачиваем
+                        if self._is_exist(file_name):
+                            file_name = get_next_name(file_name)
+
+                        # Скачать файл
+                        with tqdm(
+                            total=file_size, unit="B", unit_scale=True, desc=desc
+                        ) as pbar:
+                            # pylint: disable=cell-var-from-loop
+                            download_path = await client.download_media(
+                                message,
+                                file=file_name,
+                                progress_callback=lambda c, t: self._progress_callback(
+                                    c, t, pbar
+                                ),
+                            )
 
                     # Всегда проверять дубликаты после загрузки (если включено)
                     if download_path and skip_duplicates:
@@ -347,7 +528,7 @@ class DownloadManager:
                         )  # type: ignore
 
                     if download_path:
-                        chat_id = message.chat.id if message.chat else 0
+                        
                         validate_downloads = self.config.get("download_settings", {}).get(
                             "validate_downloads", True
                         )
@@ -381,7 +562,10 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_reference_expired_skip", id=message.id)
                     )
-                    chat_id = message.chat.id if message.chat else 0
+                    # Использовать chat_id из конфига для консистентности
+                    chat_id = self.config.get("chat_id", 0)
+                    if chat_id == 0:
+                        chat_id = message.chat.id if message.chat else 0
                     self.failed_ids.append((chat_id, message.id))
             except TimeoutError:
                 logger.warning(
@@ -392,7 +576,10 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("timeout_skip", id=message.id)
                     )
-                    chat_id = message.chat.id if message.chat else 0
+                    # Использовать chat_id из конфига для консистентности
+                    chat_id = self.config.get("chat_id", 0)
+                    if chat_id == 0:
+                        chat_id = message.chat.id if message.chat else 0
                     self.failed_ids.append((chat_id, message.id))
             except FileMigrateError as e:
                 # Файл в другом DC, переключение может занять время
@@ -406,7 +593,10 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_migrate_error_skip", id=message.id, dc=dc_num)
                     )
-                    chat_id = message.chat.id if message.chat else 0
+                    # Использовать chat_id из конфига для консистентности
+                    chat_id = self.config.get("chat_id", 0)
+                    if chat_id == 0:
+                        chat_id = message.chat.id if message.chat else 0
                     self.failed_ids.append((chat_id, message.id))
             except (asyncio.IncompleteReadError, ConnectionError, OSError) as e:
                 # Обрыв соединения при переключении DC или сетевые проблемы
@@ -421,7 +611,10 @@ class DownloadManager:
                         logger.error(
                             self.i18n.t("connection_error_skip", id=message.id, error=error_str)
                         )
-                        chat_id = message.chat.id if message.chat else 0
+                        # Использовать chat_id из конфига для консистентности
+                        chat_id = self.config.get("chat_id", 0)
+                        if chat_id == 0:
+                            chat_id = message.chat.id if message.chat else 0
                         self.failed_ids.append((chat_id, message.id))
                 else:
                     # Другие OSError/ConnectionError - пробрасываем в общий Exception handler
@@ -431,7 +624,10 @@ class DownloadManager:
                     self.i18n.t("download_exception", id=message.id, error=str(e)),
                     exc_info=True,
                 )
-                chat_id = message.chat.id if message.chat else 0
+                # Использовать chat_id из конфига для консистентности
+                chat_id = self.config.get("chat_id", 0)
+                if chat_id == 0:
+                    chat_id = message.chat.id if message.chat else 0
                 self.failed_ids.append((chat_id, message.id))
                 break
         return message.id
@@ -491,23 +687,40 @@ class DownloadManager:
         message_ids = await asyncio.gather(
             *[download_with_semaphore(message) for message in messages]
         )
-        logger.info(self.i18n.t("processed_batch", count=len(messages)))
+        first_message = messages[0] if messages else None
+        chat = getattr(first_message, "chat", None) if first_message else None
+        
+        # Использовать chat_id из конфига (установлен в begin_import_chat),
+        # а не из message.chat.id, т.к. message.chat.id может быть без префикса -100
+        # для супергрупп/каналов, а в конфиге хранится правильный chat_id с префиксом
+        _chat_id = self.config.get("chat_id", 0)
+        if _chat_id == 0 and chat:
+            # Fallback: если chat_id не установлен в конфиге, использовать из сообщения
+            _chat_id = chat.id if chat else 0
+        
+        logger.info(
+            "Обработана партия: chat_id=%s, сообщений=%s",
+            _chat_id,
+            len(messages),
+        )
 
         # Сохранить историю ВСЕХ сообщений, если включено
         if self.history_manager and messages:
-            first_message = messages[0]
-            chat = getattr(first_message, "chat", None)
-            chat_id = chat.id if chat else 0
-            chat_title = getattr(chat, "title", None)
+            chat_title = getattr(chat, "title", None) if chat else None
             # Создать словарь только для текущего чата
+            # Используем _chat_id из конфига для правильного сопоставления
             chat_files = {
                 msg_id: path
                 for (cid, msg_id), path in self.downloaded_files.items()
-                if cid == chat_id
+                if cid == _chat_id
             }
-            # Сохранить ВСЕ сообщения с информацией о скачанных файлах
+            logger.info(
+                "Сохранение истории в архив: chat_id=%s, сообщений=%s",
+                _chat_id,
+                len(messages),
+            )
             self.history_manager.save_batch(
-                messages, chat_id, chat_title, chat_files
+                messages, _chat_id, chat_title, chat_files
             )
 
         last_message_id: int = max(message_ids)
@@ -649,6 +862,7 @@ class DownloadManager:
 
         # Если история включена, но файл архива отсутствует или не проходит жёсткую проверку,
         # сбрасываем last_read_message_id и пересоздаём архив.
+        # Приоритет: путь без минуса (abs). Затем — с минусом (для совместимости со старыми архивами).
         download_settings = self.config.get("download_settings", {})
         if (
             self.history_manager is not None
@@ -657,19 +871,47 @@ class DownloadManager:
             and last_read_message_id > 0
         ):
             try:
+                from utils.history import _archive_chat_id_for_path
+
                 ext = "txt" if self.history_manager.history_format == "txt" else "jsonl"
-                history_file = os.path.join(self.history_manager.history_path, f"chat_{chat_id}.{ext}")
+                base = self.history_manager.history_path
+                fmt = "txt" if ext == "txt" else "jsonl"
+                path_id = _archive_chat_id_for_path(chat_id)
+                candidates = [os.path.join(base, f"chat_{path_id}.{ext}")]
+                # Для совместимости со старыми архивами: если chat_id отрицательный,
+                # проверяем также путь с минусом
+                if chat_id != 0 and path_id != chat_id:
+                    candidates.append(os.path.join(base, f"chat_{chat_id}.{ext}"))
+                logger.debug(
+                    "Проверка архива чата: chat_id=%s, кандидаты=%s",
+                    chat_id,
+                    candidates,
+                )
                 validate_archives = download_settings.get("validate_archives", True)
-                archive_ok = os.path.exists(history_file)
-                if archive_ok and validate_archives:
-                    archive_ok = validate_archive_file(
-                        history_file, "txt" if ext == "txt" else "jsonl"
+                archive_ok = False
+                found_path: Optional[str] = None
+                for path in candidates:
+                    if not os.path.exists(path):
+                        continue
+                    found_path = path
+                    if validate_archives:
+                        archive_ok = validate_archive_file(path, fmt)
+                    else:
+                        archive_ok = True
+                    break
+                if archive_ok and found_path:
+                    logger.info(
+                        "Архив чата найден: chat_id=%s, path=%s",
+                        chat_id,
+                        found_path,
                     )
                 if not archive_ok:
+                    display_path = found_path or candidates[0]
                     logger.warning(
-                        "История включена, но архив чата отсутствует или не прошёл проверку (%s). "
-                        "Сбрасываю last_read_message_id и пересоздаю архив.",
-                        history_file,
+                        "История включена, но архив чата отсутствует или не прошёл проверку: "
+                        "chat_id=%s, path=%s. Сбрасываю last_read_message_id и пересоздаю архив.",
+                        chat_id,
+                        display_path,
                     )
                     last_read_message_id = 0
             except Exception:
@@ -852,7 +1094,11 @@ async def main_async():
     for c in queue_entries:
         chat_id = c["chat_id"]
         chat_title = c.get("title", "")
-        logger.info(f"Начало загрузки для чата: {chat_title or chat_id}")
+        logger.info(
+            "Начало загрузки для чата: %s (chat_id=%s)",
+            chat_title or chat_id,
+            chat_id,
+        )
         # Временно установить chat_id для этого чата
         download_manager.config["chat_id"] = chat_id
         await download_manager.begin_import_chat(
