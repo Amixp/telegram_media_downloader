@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Добавлен метод `_extract_chat_id_from_jsonl()` для извлечения правильного chat_id из JSONL
 
 ### Added
+- **Скрипт очистки потерянных файлов** (`cleanup_orphaned_files.py`)
+  - Удаление файлов из папок типов медиа, которые не упоминаются ни в одном архиве чата
+  - Сканирование всех JSONL архивов и сбор путей к файлам из поля `downloaded_file`
+  - Рекурсивное сканирование папок `video/`, `photo/`, `document/`, `audio/`, `voice/`, `video_note/`
+  - Поиск потерянных файлов (разность множеств: файлы в папках минус файлы из архивов)
+  - Режим `--dry-run` по умолчанию для безопасной проверки
+  - Флаг `--force` для реального удаления
+  - Детальное логирование и статистика операций
+  - Обработка ошибок (права доступа, символические ссылки, системные файлы)
 - **Поддержка ссылок и форматирования в сообщениях** (`utils/history.py`)
   - Сохранение entities (форматирование, ссылки) из Telegram сообщений в JSONL архив
   - Обработка всех типов entities: URL, TextUrl, Mention, Hashtag, Bold, Italic, Code, Pre, Underline, Strike, Blockquote, Spoiler

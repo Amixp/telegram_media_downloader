@@ -302,6 +302,76 @@ download_settings:
 - **JSON**: `chat_{chat_id}.jsonl` (каждая строка — JSON объект)
 - **TXT**: `chat_{chat_id}.txt` (текстовый формат для чтения)
 
+### Утилиты для работы с архивом
+
+#### Экспорт чата (`export_chat.py`)
+
+Экспортирует один чат из архива в отдельную папку:
+
+```bash
+python export_chat.py \
+  --base-directory /media/disk/Telegram \
+  --chat-id -1001234567890 \
+  --out /path/to/export \
+  --link-mode hardlink  # или copy
+```
+
+Создаёт структуру:
+```
+export/
+└── chat_-1001234567890/
+    ├── chat_1001234567890.jsonl
+    ├── chat_1001234567890.html
+    ├── media/
+    │   ├── 1__file1.jpg
+    │   ├── 2__file2.mp4
+    │   └── ...
+    └── export_manifest.json
+```
+
+#### Пересборка индекса истории (`rebuild_history_index.py`)
+
+Пересобирает `history/index.html` из существующих JSONL архивов:
+
+```bash
+python rebuild_history_index.py \
+  --base-directory /media/disk/Telegram \
+  --history-directory history \
+  --regenerate-html  # опционально: пересоздать все chat_*.html
+```
+
+#### Очистка потерянных файлов (`cleanup_orphaned_files.py`)
+
+Удаляет файлы из папок типов медиа, которые не упоминаются ни в одном архиве чата:
+
+```bash
+# Проверка без удаления (режим по умолчанию)
+python cleanup_orphaned_files.py \
+  --base-directory /media/disk/Telegram \
+  --history-directory history
+
+# Реальное удаление
+python cleanup_orphaned_files.py \
+  --base-directory /media/disk/Telegram \
+  --force
+
+# Подробный вывод
+python cleanup_orphaned_files.py \
+  --base-directory /media/disk/Telegram \
+  --verbose
+```
+
+**Что делает:**
+- Сканирует все JSONL архивы в `history/` и собирает пути к файлам из поля `downloaded_file`
+- Просканирует папки `video/`, `photo/`, `document/`, `audio/`, `voice/`, `video_note/`
+- Находит файлы, которые есть в папках, но не упоминаются в архивах
+- Удаляет найденные потерянные файлы (только с флагом `--force`)
+
+**Безопасность:**
+- По умолчанию работает в режиме `--dry-run` (только показывает, что будет удалено)
+- Для реального удаления требуется явно указать `--force`
+- Детальное логирование всех операций
+
 ## Новые возможности
 
 ### Параллельные загрузки
