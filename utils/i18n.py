@@ -63,6 +63,7 @@ class I18n:
                 # Загрузка
                 "downloading": "Загрузка {file}",
                 "downloaded": "Медиа загружено - {path}",
+                "file_already_exists": "Файл уже существует и валиден: {path} (сообщение {id}), пропуск скачивания",
                 "download_failed": "Не удалось загрузить {count} файлов",
                 "retrying": "Повторная попытка загрузки файлов, которые не удалось загрузить ранее...",
                 "file_reference_expired": "Ссылка на файл истекла для сообщения[{id}], повторная попытка...",
@@ -112,6 +113,7 @@ class I18n:
                 # Download
                 "downloading": "Downloading {file}",
                 "downloaded": "Media downloaded - {path}",
+                "file_already_exists": "File already exists and valid: {path} (message {id}), skipping download",
                 "download_failed": "Failed to download {count} files",
                 "retrying": "Downloading files failed during last run...",
                 "file_reference_expired": "File reference expired for message[{id}], refetching...",

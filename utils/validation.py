@@ -90,7 +90,7 @@ def validate_downloaded_media(
         return False
     if expected_size is not None and expected_size > 0:
         # Допуск: не менее 95% от ожидаемого (обрезка при загрузке)
-        if size < int(expected_size * 0.95):
+        if size < int(expected_size * 0.99):
             return False
 
     if not check_signature:
