@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import List
+from typing import List, Optional
 
 
 def _list_chat_ids_from_jsonl(history_path: str) -> List[int]:
@@ -31,8 +31,21 @@ def _list_chat_ids_from_jsonl(history_path: str) -> List[int]:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Пересобрать history/index.html из архива (chat_*.jsonl)")
-    p.add_argument("--base-directory", required=True, help="download_settings.base_directory (где лежит history/)")
-    p.add_argument("--history-directory", default="history", help="Имя папки истории внутри base-directory (default: history)")
+    p.add_argument(
+        "--base-directory",
+        default=None,
+        help="download_settings.base_directory (где лежит history/). Если не указан, читается из config.yaml",
+    )
+    p.add_argument(
+        "--history-directory",
+        default=None,
+        help="Имя папки истории внутри base-directory. Если не указан, читается из config.yaml (default: history)",
+    )
+    p.add_argument(
+        "--config",
+        default=None,
+        help="Путь к config.yaml (по умолчанию: config.yaml в директории скрипта)",
+    )
     p.add_argument(
         "--regenerate-html",
         action="store_true",
@@ -41,13 +54,51 @@ def main() -> int:
     args = p.parse_args()
 
     # Локальный импорт: скрипт должен работать без установки пакета
+    from utils.config import ConfigManager  # pylint: disable=import-outside-toplevel
     from utils.history import MessageHistory  # pylint: disable=import-outside-toplevel
 
-    history_path = os.path.join(args.base_directory, args.history_directory)
+    # Попытаться загрузить параметры из конфига, если не заданы
+    base_directory: Optional[str] = args.base_directory
+    history_directory: Optional[str] = args.history_directory
+
+    if base_directory is None or history_directory is None:
+        try:
+            config_manager = ConfigManager(config_path=args.config)
+            config = config_manager.load()
+            download_settings = config.get("download_settings", {})
+            
+            if base_directory is None:
+                base_directory = download_settings.get("base_directory")
+                if base_directory is None or base_directory == "":
+                    # Если base_directory пустой в конфиге, использовать директорию скрипта
+                    base_directory = os.path.dirname(os.path.abspath(__file__))
+            
+            if history_directory is None:
+                history_directory = download_settings.get("history_directory", "history")
+        except FileNotFoundError:
+            if base_directory is None:
+                raise SystemExit(
+                    "Ошибка: --base-directory не указан и config.yaml не найден.\n"
+                    "Укажите --base-directory или создайте config.yaml с download_settings.base_directory"
+                )
+            # Если base_directory задан, но history_directory нет - используем дефолт
+            if history_directory is None:
+                history_directory = "history"
+        except Exception as e:
+            if base_directory is None:
+                raise SystemExit(f"Ошибка при чтении конфига: {e}")
+            # Если base_directory задан, но history_directory нет - используем дефолт
+            if history_directory is None:
+                history_directory = "history"
+
+    if base_directory is None:
+        raise SystemExit("Ошибка: --base-directory не указан и не найден в config.yaml")
+
+    history_path = os.path.join(base_directory, history_directory)
     if not os.path.isdir(history_path):
         raise SystemExit(f"Нет папки истории: {history_path}")
 
-    h = MessageHistory(base_directory=args.base_directory, history_format="html", history_directory=args.history_directory)
+    h = MessageHistory(base_directory=base_directory, history_format="html", history_directory=history_directory)
 
     chat_ids = _list_chat_ids_from_jsonl(history_path)
     if args.regenerate_html:
