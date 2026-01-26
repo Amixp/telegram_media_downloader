@@ -1264,6 +1264,8 @@ class MessageHistory:
             adjusted_entities.append(entity_copy)
 
         # Сортировать entities по offset (с конца, чтобы не сбить индексы при замене)
+        # Важно: сортируем сначала по offset (с конца), затем по длине (большие первыми)
+        # чтобы обрабатывать внешние entities перед внутренними
         sorted_entities = sorted(adjusted_entities, key=lambda e: (e.get("offset", 0), -e.get("length", 0)), reverse=True)
         
         result = text_with_urls
@@ -1272,11 +1274,29 @@ class MessageHistory:
             length = entity.get("length", 0)
             entity_type = entity.get("type", "")
             
+            # Проверить границы с учётом уже обработанного текста
+            if offset < 0 or offset >= len(result):
+                continue
             if offset + length > len(result):
+                # Обрезать length до доступного размера
+                length = len(result) - offset
+            if length <= 0:
                 continue
             
+            # Взять текст из уже обработанного result
+            # Если result содержит HTML-теги от предыдущих замен (вложенные entities),
+            # то entity_text будет содержать эти теги, и мы должны их сохранить
             entity_text = result[offset:offset + length]
-            entity_text_escaped = html.escape(entity_text)
+            
+            # Проверить, не содержит ли entity_text уже HTML-теги (от предыдущих замен)
+            # Если содержит, значит это вложенная entity, и мы должны обработать её по-другому
+            if "<" in entity_text and ">" in entity_text:
+                # Это вложенная entity - текст уже содержит HTML от предыдущих замен
+                # В этом случае не нужно экранировать, так как HTML уже есть
+                entity_text_escaped = entity_text
+            else:
+                # Обычный текст - экранируем
+                entity_text_escaped = html.escape(entity_text)
             
             # Обработать разные типы entities
             html_tag = None
@@ -1285,7 +1305,20 @@ class MessageHistory:
             
             if entity_type == "MessageEntityUrl":
                 # Обычная URL ссылка
-                href = entity_text
+                # Если entity_text уже содержит HTML (вложенная entity), извлечь чистый URL
+                if "<" in entity_text and ">" in entity_text:
+                    # Попытаться извлечь URL из HTML или использовать исходный текст
+                    # Для MessageEntityUrl href должен быть самим текстом entity
+                    # Но если текст уже обработан, нужно использовать исходный текст из text_with_urls
+                    # В этом случае используем entity_text как есть для href
+                    href = entity_text
+                    # Удалить HTML-теги для href, если они есть
+                    import re as re_module
+                    href_clean = re_module.sub(r'<[^>]+>', '', href)
+                    if href_clean:
+                        href = href_clean
+                else:
+                    href = entity_text
                 # Извлечь chat_id для добавления в список загрузок
                 extracted_chat_id = self._extract_chat_id_from_link(href)
                 if extracted_chat_id and extracted_chat_id != current_chat_id:
@@ -1327,7 +1360,13 @@ class MessageHistory:
                 html_tag = f'<span class="message-spoiler" onclick="this.classList.toggle(\'revealed\')">{entity_text_escaped}</span>'
             
             if html_tag:
-                result = result[:offset] + html_tag + result[offset + length:]
+                # Убедиться, что замена выполняется в правильных границах
+                if offset < len(result) and offset + length <= len(result):
+                    result = result[:offset] + html_tag + result[offset + length:]
+                elif offset < len(result):
+                    # Если length выходит за границы, обрезать до конца
+                    result = result[:offset] + html_tag + result[offset + length:]
+                # Если offset выходит за границы, пропускаем (уже проверено выше)
         
         return result
 
