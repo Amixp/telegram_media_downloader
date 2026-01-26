@@ -1,6 +1,7 @@
 """Unittest module for DownloadManager (media_downloader.py)."""
 
 import asyncio
+import json
 import os
 import platform
 import shutil
@@ -15,6 +16,7 @@ from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
 from media_downloader import DownloadManager
 from utils.config import ConfigManager
+from utils.validation import validate_archive_file
 
 
 MOCK_DIR: str = "/root/project"
@@ -30,8 +32,9 @@ def platform_generic_path(_path: str) -> str:
 
 
 class Chat:
-    def __init__(self, chat_id):
+    def __init__(self, chat_id, title=None):
         self.id = chat_id
+        self.title = title or ""
 
 
 class MockMessage:
@@ -44,9 +47,13 @@ class MockMessage:
         self.video = kwargs.get("video", None)
         self.voice = kwargs.get("voice", None)
         self.video_note = kwargs.get("video_note", None)
-        self.chat = Chat(kwargs.get("chat_id", 123456))
+        self.chat = Chat(kwargs.get("chat_id", 123456), kwargs.get("title"))
         self.date = kwargs.get("date", datetime.now(timezone.utc))
         self.text = kwargs.get("text", "")
+        self.message = kwargs.get("message", self.text)
+        self.sender_id = kwargs.get("sender_id", 0)
+        self.reply_to = kwargs.get("reply_to")
+        self.edit_date = kwargs.get("edit_date")
 
         if self.photo is not None:
             self.media = mock.Mock(spec=MessageMediaPhoto, photo=self.photo)
@@ -421,3 +428,220 @@ class MediaDownloaderTestCase(unittest.TestCase):
         # Файл есть -> ожидаем min_id=501 (как обычно)
         self.loop.run_until_complete(dm.begin_import_chat(client, 123456, "T", pagination_limit=100))
         self.assertEqual(client.last_iter_params["min_id"], 501)
+
+    def test_archive_search_alternative_path(self):
+        """Поиск архива: на диске chat_999.jsonl (путь без минуса), в конфиге chat_id=999 — находим."""
+        tmpdir = tempfile.mkdtemp(prefix="tmd-test-history-altpath-")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        history_dir = os.path.join(tmpdir, "history")
+        os.makedirs(history_dir, exist_ok=True)
+        # Теперь пути без минуса (abs(chat_id))
+        with open(os.path.join(history_dir, "chat_999.jsonl"), "w", encoding="utf-8") as f:
+            f.write('{"id": 1, "text": "ok", "chat_id": 999}\n')
+
+        cfg_path = os.path.join(tmpdir, "config.yaml")
+        cfg = {
+            "api_id": 1,
+            "api_hash": "x",
+            "language": "ru",
+            "media_types": ["all"],
+            "file_formats": {"audio": ["all"], "document": ["all"], "video": ["all"]},
+            "download_settings": {
+                "skip_duplicates": False,
+                "download_message_history": True,
+                "history_format": "html",
+                "history_directory": "history",
+                "base_directory": tmpdir,
+                "history_rebuild_if_missing": True,
+            },
+            "chats": [
+                {"chat_id": 999, "title": "T", "last_read_message_id": 500, "ids_to_retry": [], "enabled": True}
+            ],
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+
+        mgr = ConfigManager(config_path=cfg_path)
+        mgr.load()
+        dm = DownloadManager(mgr)
+        client = MockClient()
+        client._iter_messages = []
+
+        self.loop.run_until_complete(dm.begin_import_chat(client, 999, "T", pagination_limit=100))
+        self.assertEqual(client.last_iter_params["min_id"], 501)
+
+    def test_archive_save_and_validate(self):
+        """Сохранение архива: save_batch создаёт chat_{id}.jsonl, validate_archive_file проходит."""
+        tmpdir = tempfile.mkdtemp(prefix="tmd-test-history-save-")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        history_dir = os.path.join(tmpdir, "history")
+        os.makedirs(history_dir, exist_ok=True)
+        cfg_path = os.path.join(tmpdir, "config.yaml")
+        cfg = {
+            "api_id": 1,
+            "api_hash": "x",
+            "language": "ru",
+            "media_types": ["all"],
+            "file_formats": {"audio": ["all"], "document": ["all"], "video": ["all"]},
+            "download_settings": {
+                "skip_duplicates": False,
+                "download_message_history": True,
+                "history_format": "html",
+                "history_directory": "history",
+                "base_directory": tmpdir,
+            },
+            "chats": [{"chat_id": -100222, "title": "Test", "last_read_message_id": 0, "ids_to_retry": [], "enabled": True}],
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+
+        mgr = ConfigManager(config_path=cfg_path)
+        mgr.load()
+        dm = DownloadManager(mgr)
+        client = MockClient()
+        # Одно сообщение без медиа — только сохранение в архив
+        client._iter_messages = [
+            MockMessage(id=1, media=False, chat_id=-100222, text="hello"),
+        ]
+
+        self.loop.run_until_complete(dm.begin_import_chat(client, -100222, "Test", pagination_limit=100))
+
+        jsonl_path = os.path.join(history_dir, "chat_100222.jsonl")
+        self.assertTrue(os.path.isfile(jsonl_path), f"Ожидается файл архива: {jsonl_path}")
+        self.assertTrue(validate_archive_file(jsonl_path, "jsonl"), "Архив должен проходить валидацию")
+
+    def test_archive_download_and_save_integration(self):
+        """Загрузка и сохранение: итерация сообщений → process_messages → save_batch → архив на диске."""
+        tmpdir = tempfile.mkdtemp(prefix="tmd-test-history-dl-")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        history_dir = os.path.join(tmpdir, "history")
+        os.makedirs(history_dir, exist_ok=True)
+        cfg_path = os.path.join(tmpdir, "config.yaml")
+        cfg = {
+            "api_id": 1,
+            "api_hash": "x",
+            "language": "ru",
+            "media_types": ["all"],
+            "file_formats": {"audio": ["all"], "document": ["all"], "video": ["all"]},
+            "download_settings": {
+                "skip_duplicates": False,
+                "download_message_history": True,
+                "history_format": "json",
+                "history_directory": "history",
+                "base_directory": tmpdir,
+            },
+            "chats": [{"chat_id": -100333, "title": "DL", "last_read_message_id": 0, "ids_to_retry": [], "enabled": True}],
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+
+        mgr = ConfigManager(config_path=cfg_path)
+        mgr.load()
+        dm = DownloadManager(mgr)
+        client = MockClient()
+        client._iter_messages = [
+            MockMessage(id=10, media=False, chat_id=-100333, text="a"),
+            MockMessage(id=11, media=False, chat_id=-100333, text="b"),
+        ]
+
+        self.loop.run_until_complete(dm.begin_import_chat(client, -100333, "DL", pagination_limit=100))
+
+        jsonl_path = os.path.join(history_dir, "chat_100333.jsonl")
+        self.assertTrue(os.path.isfile(jsonl_path), f"Ожидается файл архива: {jsonl_path}")
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+        self.assertGreaterEqual(len(lines), 2, "В архиве должно быть не менее 2 сообщений")
+        self.assertTrue(validate_archive_file(jsonl_path, "jsonl"), "Архив должен проходить валидацию")
+
+    def test_find_file_in_archive_by_name_and_size(self):
+        """Поиск файла в архиве по имени и размеру: если файл уже скачан и записан в архив, пропустить скачивание."""
+        tmpdir = tempfile.mkdtemp(prefix="tmd-test-archive-find-")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        history_dir = os.path.join(tmpdir, "history")
+        os.makedirs(history_dir, exist_ok=True)
+
+        # Создать архив с записью о скачанном файле
+        chat_id = -100444
+        path_id = abs(chat_id)
+        jsonl_path = os.path.join(history_dir, f"chat_{path_id}.jsonl")
+        existing_file_path = os.path.join(tmpdir, "documents", "test_file.pdf")
+        os.makedirs(os.path.dirname(existing_file_path), exist_ok=True)
+        with open(existing_file_path, "wb") as f:
+            f.write(b"test content" * 100)  # ~1200 байт
+        file_size = os.path.getsize(existing_file_path)
+
+        # Записать в архив информацию о файле
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "id": 100,
+                        "date": "2020-01-01T00:00:00+00:00",
+                        "text": "test",
+                        "chat_id": chat_id,
+                        "chat_title": "Test",
+                        "has_media": True,
+                        "media_type": "document",
+                        "file_name": "test_file.pdf",
+                        "file_size": file_size,
+                        "downloaded_file": existing_file_path,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+        cfg_path = os.path.join(tmpdir, "config.yaml")
+        cfg = {
+            "api_id": 1,
+            "api_hash": "x",
+            "language": "ru",
+            "media_types": ["all"],
+            "file_formats": {"audio": ["all"], "document": ["all"], "video": ["all"]},
+            "download_settings": {
+                "skip_duplicates": False,
+                "download_message_history": True,
+                "history_format": "jsonl",
+                "history_directory": "history",
+                "base_directory": tmpdir,
+                "validate_downloads": True,
+            },
+            "chats": [
+                {"chat_id": chat_id, "title": "Test", "last_read_message_id": 0, "ids_to_retry": [], "enabled": True}
+            ],
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+
+        mgr = ConfigManager(config_path=cfg_path)
+        mgr.load()
+        dm = DownloadManager(mgr)
+
+        # Проверить поиск файла в архиве
+        found_path = dm._find_file_in_archive(chat_id, "test_file.pdf", file_size)
+        self.assertEqual(found_path, existing_file_path, "Файл должен быть найден в архиве")
+
+        # Проверить, что файл будет пропущен при скачивании
+        # Создать сообщение с таким же именем и размером
+        mock_doc = mock.Mock()
+        mock_doc.size = file_size
+        mock_doc.mime_type = "application/pdf"
+        mock_doc.attributes = [mock.Mock(file_name="test_file.pdf")]
+
+        mock_msg = MockMessage(
+            id=101,
+            media=True,
+            chat_id=chat_id,
+            document=mock_doc,
+        )
+
+        # Проверить существующий файл (должен найти в архиве)
+        expected_path = os.path.join(tmpdir, "documents", "test_file.pdf")
+        existing = dm._check_existing_file(
+            expected_path,
+            "document",
+            file_size,
+            chat_id=chat_id,
+            file_name="test_file.pdf",
+        )
+        self.assertEqual(existing, existing_file_path, "Файл должен быть найден через архив")

@@ -17,7 +17,8 @@ def test_export_chat_copies_or_links_files():
             f.write(b"123")
 
         chat_id = -123
-        jsonl_path = os.path.join(history, f"chat_{chat_id}.jsonl")
+        path_id = abs(chat_id)
+        jsonl_path = os.path.join(history, f"chat_{path_id}.jsonl")
         with open(jsonl_path, "w", encoding="utf-8") as f:
             f.write(
                 '{"id": 1, "date": "2020-01-01T00:00:00+00:00", "text": "x", "chat_id": -123, "chat_title": "T", "downloaded_file": "'
@@ -29,7 +30,7 @@ def test_export_chat_copies_or_links_files():
         result, export_path = export_chat(base_directory=base, chat_id=chat_id, out_directory=out, link_mode="copy")
 
         assert result.exported == 1
-        assert os.path.exists(os.path.join(export_path, f"chat_{chat_id}.jsonl"))
+        assert os.path.exists(os.path.join(export_path, f"chat_{path_id}.jsonl"))
         exported_files_dir = os.path.join(export_path, "media")
         assert os.path.isdir(exported_files_dir)
         exported_files = os.listdir(exported_files_dir)
