@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Исправлены дубли чатов в индексе** (`utils/history.py`)
+  - Устранена проблема дублирования чатов в `index.html` при разных знаках chat_id (например, -100123 и 100123)
+  - `_list_chat_ids_from_jsonl()` теперь извлекает реальный chat_id (с правильным знаком) из JSONL файлов
+  - `_load_index_manifest()` автоматически удаляет дубли при загрузке манифеста, объединяя данные
+  - При добавлении чатов из JSONL проверяется наличие по path_id (abs(chat_id)) для избежания дублей
+  - Добавлен метод `_extract_chat_id_from_jsonl()` для извлечения правильного chat_id из JSONL
+
 ### Added
 - **Поддержка ссылок и форматирования в сообщениях** (`utils/history.py`)
   - Сохранение entities (форматирование, ссылки) из Telegram сообщений в JSONL архив

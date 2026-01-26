@@ -1566,9 +1566,22 @@ class MessageHistory:
             manifest[chat_id]["last_message_date"] = last.isoformat() if last else manifest[chat_id].get("last_message_date")
 
         # 2b) Подтянуть чаты, которые уже есть в архиве (chat_*.jsonl), но не фигурируют в текущем запуске
+        # Нормализовать chat_id для избежания дублей (использовать abs для проверки)
+        manifest_path_ids = {abs(cid): cid for cid in manifest.keys()}
+        
         for chat_id in self._list_chat_ids_from_jsonl():
-            if chat_id in manifest:
+            path_id = abs(chat_id)
+            # Проверить, есть ли уже чат с таким path_id в манифесте
+            if path_id in manifest_path_ids:
+                existing_chat_id = manifest_path_ids[path_id]
+                # Если chat_id отличается (разные знаки), обновить на правильный
+                if existing_chat_id != chat_id:
+                    # Перенести данные на правильный chat_id
+                    if existing_chat_id in manifest:
+                        manifest[chat_id] = manifest.pop(existing_chat_id)
+                        manifest_path_ids[path_id] = chat_id
                 continue
+            
             meta = self._try_get_chat_meta_from_jsonl(chat_id)
             if meta is None:
                 continue
@@ -1578,6 +1591,7 @@ class MessageHistory:
                 "message_count": message_count,
                 "last_message_date": last_message_date.isoformat() if last_message_date else None,
             }
+            manifest_path_ids[path_id] = chat_id
 
         # 3) Сохранить манифест (чтобы следующий запуск не сканировал архив заново)
         self._save_index_manifest(manifest)
@@ -1843,7 +1857,11 @@ class MessageHistory:
         )
 
     def _load_index_manifest(self) -> Dict[int, Dict[str, Any]]:
-        """Загрузить манифест индекса (index.json) из истории."""
+        """
+        Загрузить манифест индекса (index.json) из истории.
+        
+        Удаляет дубли чатов с одинаковым path_id (abs(chat_id)), оставляя один вариант.
+        """
         if not os.path.exists(self._index_manifest_file):
             return {}
         try:
@@ -1853,14 +1871,58 @@ class MessageHistory:
             return {}
 
         manifest: Dict[int, Dict[str, Any]] = {}
+        path_id_to_chat_id: Dict[int, int] = {}  # path_id -> chat_id для обнаружения дублей
+        
         # Ключи в JSON — строки, приводим к int
         for k, v in raw.items():
             try:
                 chat_id = int(k)
             except Exception:
                 continue
-            if isinstance(v, dict):
+            if not isinstance(v, dict):
+                continue
+            
+            path_id = abs(chat_id)
+            
+            # Проверить, есть ли уже чат с таким path_id
+            if path_id in path_id_to_chat_id:
+                existing_chat_id = path_id_to_chat_id[path_id]
+                # Объединить данные: взять максимум по message_count и последнюю дату
+                existing_info = manifest[existing_chat_id]
+                new_info = v
+                
+                # Объединить message_count (взять максимум)
+                existing_count = int(existing_info.get("message_count") or 0)
+                new_count = int(new_info.get("message_count") or 0)
+                merged_count = max(existing_count, new_count)
+                
+                # Объединить last_message_date (взять более позднюю)
+                existing_date = self._parse_iso_dt(existing_info.get("last_message_date"))
+                new_date = self._parse_iso_dt(new_info.get("last_message_date"))
+                merged_date = self._max_dt(existing_date, new_date)
+                
+                # Объединить title (предпочесть непустой)
+                merged_title = new_info.get("title") or existing_info.get("title") or f"Chat {chat_id}"
+                
+                # Обновить существующую запись
+                manifest[existing_chat_id] = {
+                    "title": merged_title,
+                    "message_count": merged_count,
+                    "last_message_date": merged_date.isoformat() if merged_date else None,
+                }
+                
+                # Использовать chat_id с правильным знаком (предпочесть отрицательный для групп/каналов)
+                if chat_id < 0 or existing_chat_id > 0:
+                    # Если новый chat_id отрицательный, заменить
+                    if chat_id < 0:
+                        old_chat_id = existing_chat_id
+                        manifest[chat_id] = manifest.pop(old_chat_id)
+                        path_id_to_chat_id[path_id] = chat_id
+            else:
+                # Первая запись с таким path_id
                 manifest[chat_id] = v
+                path_id_to_chat_id[path_id] = chat_id
+        
         return manifest
 
     def _save_index_manifest(self, manifest: Dict[int, Dict[str, Any]]) -> None:
@@ -1874,20 +1936,73 @@ class MessageHistory:
             pass
 
     def _list_chat_ids_from_jsonl(self) -> List[int]:
-        """Вернуть список chat_id, найденных в истории по chat_*.jsonl."""
+        """
+        Вернуть список chat_id, найденных в истории по chat_*.jsonl.
+        
+        Возвращает нормализованные chat_id (с правильным знаком) из JSONL файлов,
+        чтобы избежать дублей в индексе.
+        """
         chat_ids: List[int] = []
+        seen_path_ids: Set[int] = set()  # Для избежания дублей
+        
         try:
             for name in os.listdir(self.history_path):
                 if not (name.startswith("chat_") and name.endswith(".jsonl")):
                     continue
                 middle = name[len("chat_") : -len(".jsonl")]
                 try:
-                    chat_ids.append(int(middle))
+                    path_id = int(middle)
+                    # Избежать дублей по path_id
+                    if path_id in seen_path_ids:
+                        continue
+                    seen_path_ids.add(path_id)
+                    
+                    # Попытаться получить реальный chat_id из JSONL (с правильным знаком)
+                    jsonl_path = os.path.join(self.history_path, name)
+                    real_chat_id = self._extract_chat_id_from_jsonl(jsonl_path)
+                    if real_chat_id is not None:
+                        chat_ids.append(real_chat_id)
+                    else:
+                        # Fallback: использовать path_id (положительный)
+                        # Но это может привести к дублям, если в манифесте есть отрицательный
+                        chat_ids.append(path_id)
                 except Exception:
                     continue
         except Exception:
             return []
         return chat_ids
+
+    def _extract_chat_id_from_jsonl(self, jsonl_path: str) -> Optional[int]:
+        """
+        Извлечь реальный chat_id (с правильным знаком) из JSONL файла.
+        
+        Parameters
+        ----------
+        jsonl_path: str
+            Путь к JSONL файлу.
+            
+        Returns
+        -------
+        Optional[int]
+            Реальный chat_id из JSONL или None, если не удалось извлечь.
+        """
+        try:
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if isinstance(obj, dict) and "chat_id" in obj:
+                            chat_id = obj["chat_id"]
+                            if isinstance(chat_id, int):
+                                return chat_id
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return None
 
     def _try_get_chat_meta_from_jsonl(self, chat_id: int) -> Optional[Tuple[str, int, Optional[datetime]]]:
         """
