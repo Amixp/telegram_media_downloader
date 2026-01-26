@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Поддержка ссылок и форматирования в сообщениях** (`utils/history.py`)
+  - Сохранение entities (форматирование, ссылки) из Telegram сообщений в JSONL архив
+  - Обработка всех типов entities: URL, TextUrl, Mention, Hashtag, Bold, Italic, Code, Pre, Underline, Strike, Blockquote, Spoiler
+  - Преобразование Telegram deep links (`tg://` и `https://t.me/`) в ссылки на архивные HTML файлы
+  - Поддержка ссылок на сообщения в других чатах: `tg://openmessage?chat_id=123&message_id=456` → `chat_123.html#message-456`
+  - Поддержка ссылок формата `https://t.me/c/chat_id/message_id` → `chat_123.html#message-456`
+  - Якоря для сообщений (`id="message-{msg_id}"`) для прямых ссылок на конкретные сообщения
+  - JavaScript для автоматической прокрутки к якорю при загрузке страницы с подсветкой сообщения
+  - CSS стили для форматирования: hashtag, spoiler (с возможностью раскрытия), code, pre, blockquote
+  - Fallback обработка URL через regex для сообщений без entities
+- **Автоматическое добавление чатов из ссылок** (`utils/history.py`, `utils/config.py`)
+  - Извлечение chat_id из Telegram ссылок в сообщениях
+  - Автоматическое добавление найденных чатов в список загрузок (`config.yaml`)
+  - Опция `download_settings.auto_add_chats_from_links: false` для включения/выключения функции
+  - Новые чаты добавляются с `enabled: false` по умолчанию (пользователь может включить при следующем запуске)
+  - Метод `ConfigManager.add_chat_to_download_list()` для добавления чатов в конфигурацию
+  - Логирование добавленных чатов для отслеживания
 - **Жёсткая валидация скачанных медиафайлов** (`utils/validation.py`)
   - `validate_downloaded_media()`: проверка существования, размера, magic bytes для видео/аудио
   - Для видео: проверка сигнатур контейнеров (MP4/MOV, MKV/WebM, AVI, OGG, WAV)
