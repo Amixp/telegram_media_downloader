@@ -31,6 +31,8 @@ download_settings:
   validate_downloads: true
   # При history_rebuild_if_missing также проверять валидность архива (JSONL/TXT). Битый — пересоздать.
   validate_archives: true
+  # Автоматически добавлять чаты из ссылок в сообщениях в список загрузок
+  auto_add_chats_from_links: false
 
 # Типы медиа для загрузки
 # Можно указать конкретные типы или "all" для всех типов

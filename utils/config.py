@@ -281,6 +281,65 @@ class ConfigManager:
             # Порядок очереди загрузки (0-based)
             existing["order"] = order_idx
 
+    def add_chat_to_download_list(self, chat_id: int, chat_title: Optional[str] = None) -> bool:
+        """
+        Добавить чат в список загрузок, если его там ещё нет.
+
+        Parameters
+        ----------
+        chat_id: int
+            ID чата для добавления.
+        chat_title: Optional[str]
+            Название чата (если известно).
+
+        Returns
+        -------
+        bool
+            True, если чат был добавлен, False если уже был в списке.
+        """
+        if self._config is None:
+            self.load()
+        if self._config is None:
+            raise ValueError("Конфигурация не загружена")
+
+        if "chats" not in self._config or not isinstance(self._config.get("chats"), list):
+            self._config["chats"] = []
+
+        chats_list: List[Dict[str, Any]] = self._config["chats"]
+        
+        # Проверить, есть ли уже этот чат в списке
+        for chat in chats_list:
+            if isinstance(chat, dict) and chat.get("chat_id") == chat_id:
+                # Чат уже есть, обновить title если нужно
+                if chat_title and isinstance(chat_title, str) and chat_title.strip():
+                    chat["title"] = chat_title
+                return False
+
+        # Чат не найден, добавить его
+        new_chat = {
+            "chat_id": chat_id,
+            "title": chat_title or f"Chat {chat_id}",
+            "last_read_message_id": 0,
+            "ids_to_retry": [],
+            "enabled": False,  # По умолчанию выключен, пользователь включит при следующем запуске
+        }
+        
+        # Определить порядок (последний в очереди)
+        max_order = -1
+        for chat in chats_list:
+            if isinstance(chat, dict) and "order" in chat:
+                try:
+                    order = int(chat.get("order", -1))
+                    if order > max_order:
+                        max_order = order
+                except (ValueError, TypeError):
+                    pass
+        
+        new_chat["order"] = max_order + 1
+        chats_list.append(new_chat)
+        
+        return True
+
     @property
     def config(self) -> Dict[str, Any]:
         """
