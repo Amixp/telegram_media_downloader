@@ -1582,8 +1582,23 @@ class MessageHistory:
                     if existing_chat_id in manifest:
                         manifest[chat_id] = manifest.pop(existing_chat_id)
                         manifest_path_ids[path_id] = chat_id
+                
+                # Всегда обновляем метаданные из JSONL (источник истины), даже если чат уже в манифесте
+                # Это важно для rebuild_history_index.py, чтобы исправить накопленные ошибки
+                meta = self._try_get_chat_meta_from_jsonl(chat_id)
+                if meta is not None:
+                    title, message_count, last_message_date = meta
+                    # Обновить существующую запись данными из JSONL
+                    manifest[chat_id]["message_count"] = message_count
+                    if title:
+                        manifest[chat_id]["title"] = title
+                    if last_message_date:
+                        old_last = self._parse_iso_dt(manifest[chat_id].get("last_message_date"))
+                        last = self._max_dt(old_last, last_message_date)
+                        manifest[chat_id]["last_message_date"] = last.isoformat() if last else None
                 continue
             
+            # Чат не в манифесте - создать новую запись
             meta = self._try_get_chat_meta_from_jsonl(chat_id)
             if meta is None:
                 continue
