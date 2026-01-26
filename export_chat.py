@@ -99,8 +99,9 @@ def export_chat(
         raise ValueError("link_mode must be 'hardlink' or 'copy'")
 
     history_path = os.path.join(base_directory, history_directory)
-    jsonl_path = os.path.join(history_path, f"chat_{chat_id}.jsonl")
-    html_path = os.path.join(history_path, f"chat_{chat_id}.html")
+    path_id = abs(chat_id)
+    jsonl_path = os.path.join(history_path, f"chat_{path_id}.jsonl")
+    html_path = os.path.join(history_path, f"chat_{path_id}.html")
 
     if not os.path.exists(jsonl_path):
         raise FileNotFoundError(jsonl_path)
