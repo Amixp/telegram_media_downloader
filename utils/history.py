@@ -1528,42 +1528,44 @@ class MessageHistory:
 
         # 2a) Обновить записи чатов, которые были в этом запуске
         for chat_id, info in self.chats_info.items():
-            seeded_from_jsonl = False
-            # Если манифеста ещё нет (первый запуск с этой фичей) — инициализируем из JSONL, если он есть
-            if chat_id not in manifest:
-                seeded = self._try_get_chat_meta_from_jsonl(chat_id)
-                if seeded is not None:
-                    title, message_count, last_message_date = seeded
+            # Всегда пересчитываем message_count из JSONL (источник истины), чтобы избежать накопления ошибок
+            # JSONL файл уже дописан новыми сообщениями из текущего запуска
+            seeded = self._try_get_chat_meta_from_jsonl(chat_id)
+            if seeded is not None:
+                title, message_count, last_message_date = seeded
+                # Если чат уже был в манифесте, обновляем его данными из JSONL
+                if chat_id in manifest:
+                    manifest[chat_id]["message_count"] = message_count
+                    if title:
+                        manifest[chat_id]["title"] = title
+                    if last_message_date:
+                        old_last = self._parse_iso_dt(manifest[chat_id].get("last_message_date"))
+                        last = self._max_dt(old_last, last_message_date)
+                        manifest[chat_id]["last_message_date"] = last.isoformat() if last else None
+                else:
+                    # Создать новую запись
                     manifest[chat_id] = {
                         "title": title,
                         "message_count": message_count,
                         "last_message_date": last_message_date.isoformat() if last_message_date else None,
                     }
-                    seeded_from_jsonl = True
-                else:
+            else:
+                # JSONL файла нет (первый запуск для этого чата)
+                if chat_id not in manifest:
                     manifest[chat_id] = {
                         "title": info.get("title") or f"Chat {chat_id}",
-                        "message_count": 0,
-                        "last_message_date": None,
+                        "message_count": int(info.get("message_count") or 0),
+                        "last_message_date": info.get("last_message_date").isoformat() if info.get("last_message_date") else None,
                     }
-
-            # Учитываем инкремент текущего запуска:
-            # - если запись была "посеяна" из JSONL в этом же вызове, count уже включает новые сообщения (файл уже дописан)
-            # - иначе добавляем дельту к предыдущему total из манифеста
-            if not seeded_from_jsonl:
-                manifest[chat_id]["message_count"] = int(manifest[chat_id].get("message_count") or 0) + int(
-                    info.get("message_count") or 0
-                )
-
-            # Обновить title
-            if info.get("title"):
-                manifest[chat_id]["title"] = info["title"]
-
-            # Обновить дату последнего сообщения (берём max)
-            new_last = info.get("last_message_date")
-            old_last = self._parse_iso_dt(manifest[chat_id].get("last_message_date"))
-            last = self._max_dt(old_last, new_last)
-            manifest[chat_id]["last_message_date"] = last.isoformat() if last else manifest[chat_id].get("last_message_date")
+                else:
+                    # Чат в манифесте, но JSONL нет - обновляем только title и дату
+                    if info.get("title"):
+                        manifest[chat_id]["title"] = info["title"]
+                    new_last = info.get("last_message_date")
+                    if new_last:
+                        old_last = self._parse_iso_dt(manifest[chat_id].get("last_message_date"))
+                        last = self._max_dt(old_last, new_last)
+                        manifest[chat_id]["last_message_date"] = last.isoformat() if last else manifest[chat_id].get("last_message_date")
 
         # 2b) Подтянуть чаты, которые уже есть в архиве (chat_*.jsonl), но не фигурируют в текущем запуске
         # Нормализовать chat_id для избежания дублей (использовать abs для проверки)
@@ -1580,8 +1582,23 @@ class MessageHistory:
                     if existing_chat_id in manifest:
                         manifest[chat_id] = manifest.pop(existing_chat_id)
                         manifest_path_ids[path_id] = chat_id
+                
+                # Всегда обновляем метаданные из JSONL (источник истины), даже если чат уже в манифесте
+                # Это важно для rebuild_history_index.py, чтобы исправить накопленные ошибки
+                meta = self._try_get_chat_meta_from_jsonl(chat_id)
+                if meta is not None:
+                    title, message_count, last_message_date = meta
+                    # Обновить существующую запись данными из JSONL
+                    manifest[chat_id]["message_count"] = message_count
+                    if title:
+                        manifest[chat_id]["title"] = title
+                    if last_message_date:
+                        old_last = self._parse_iso_dt(manifest[chat_id].get("last_message_date"))
+                        last = self._max_dt(old_last, last_message_date)
+                        manifest[chat_id]["last_message_date"] = last.isoformat() if last else None
                 continue
             
+            # Чат не в манифесте - создать новую запись
             meta = self._try_get_chat_meta_from_jsonl(chat_id)
             if meta is None:
                 continue
