@@ -320,9 +320,22 @@ class MediaDownloaderTestCase(unittest.TestCase):
             dm._progress_callback(50, 100, pbar)  # type: ignore
             self.assertEqual(pbar.n, 50)
 
+    @mock.patch("core.downloader.os.makedirs")
+    @mock.patch("core.downloader.os.path.exists")
+    @mock.patch("core.downloader.os.path.getsize")
+    @mock.patch("core.downloader.os.rename")
+    @mock.patch("core.downloader.open", create=True)
     @mock.patch("core.downloader.tqdm")
     @mock.patch("core.downloader.PROJECT_ROOT", new=MOCK_DIR)
-    def test_download_media(self, mock_tqdm):
+    def test_download_media(self, mock_tqdm, mock_open, mock_rename, mock_getsize, mock_exists, mock_makedirs):
+        # Selective mock for exists to allow config file to "exist"
+        real_exists = os.path.exists
+        def side_effect(path):
+            if "config.yaml" in str(path):
+                return True
+            return False
+        mock_exists.side_effect = side_effect
+        mock_open.return_value.__enter__.return_value = mock.Mock()
         dm = self._make_manager()
         client = MockClient()
 
@@ -347,6 +360,56 @@ class MediaDownloaderTestCase(unittest.TestCase):
         )
         result = self.loop.run_until_complete(dm.download_media(client, msg_refetch, ["video"], {"video": ["all"]}))
         self.assertEqual(result, 7)
+
+    @mock.patch("core.downloader.os.makedirs")
+    @mock.patch("core.downloader.os.path.exists")
+    @mock.patch("core.downloader.os.path.getsize")
+    @mock.patch("core.downloader.os.rename")
+    @mock.patch("core.downloader.open", create=True)
+    @mock.patch("core.downloader.tqdm")
+    @mock.patch("core.downloader.PROJECT_ROOT", new=MOCK_DIR)
+    def test_resumable_download(self, mock_tqdm, mock_open, mock_rename, mock_getsize, mock_exists, mock_makedirs):
+        # Case: Part file exists with 512 bytes, total 1024
+        dm = self._make_manager()
+        client = MockClient()
+
+        def exists_side_effect(path):
+            if "config.yaml" in str(path): return True
+            if ".part" in str(path): return True
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+        mock_getsize.return_value = 512
+        mock_file = mock.Mock()
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        mock_pbar = mock.Mock()
+        mock_tqdm.return_value.__enter__ = mock.Mock(return_value=mock_pbar)
+
+        msg = MockMessage(
+            id=10,
+            media=True,
+            chat_id=123456,
+            video=MockVideo(file_name="large_video.mp4", mime_type="video/mp4", size=1024),
+        )
+
+        # We need to mock client.download_media to verify arguments
+        client.download_media = mock.AsyncMock(return_value="large_video.mp4")
+
+        result = self.loop.run_until_complete(dm.download_media(client, msg, ["video"], {"video": ["all"]}))
+
+        # Verify Telethon was called with correct offset and file object
+        client.download_media.assert_called_once()
+        args, kwargs = client.download_media.call_args
+        self.assertEqual(kwargs["offset"], 512)
+        self.assertEqual(kwargs["file"], mock_file)
+
+        # Verify rename was called
+        mock_rename.assert_called_once()
+
+        # Verify tqdm was initialized with offset
+        kwargs_tqdm = mock_tqdm.call_args[1]
+        self.assertEqual(kwargs_tqdm["initial"], 512)
 
     @classmethod
     def tearDownClass(cls):

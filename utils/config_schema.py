@@ -13,6 +13,8 @@ class DownloadSettings(BaseModel):
     validate_downloads: bool = True
     validate_archives: bool = True
     auto_add_chats_from_links: bool = False
+    resumable_downloads: bool = True
+    cache_directory: str = ".download_cache"
 
 class SenderFilter(BaseModel):
     enabled: bool = False
@@ -128,7 +130,7 @@ class AppConfig(BaseModel):
     chat_selection_ui: Literal["classic", "tui"] = "tui"
     tui: TuiConfig = Field(default_factory=TuiConfig)
     chats: List[ChatConfig] = []
-    
+
     # Legacy fields
     chat_id: Optional[int] = None
     last_read_message_id: Optional[int] = None
@@ -140,7 +142,7 @@ class AppConfig(BaseModel):
         if v == "your_api_id":
              return None
         return v
-    
+
     @field_validator("api_hash")
     @classmethod
     def validate_api_hash(cls, v):

@@ -33,6 +33,10 @@ download_settings:
   validate_archives: true
   # Автоматически добавлять чаты из ссылок в сообщениях в список загрузок
   auto_add_chats_from_links: false
+  # Режим докачки файлов: возобновление загрузки при обрыве (по умолчанию true)
+  resumable_downloads: true
+  # Директория для временных файлов (.part)
+  cache_directory: ".download_cache"
 
 # Типы медиа для загрузки
 # Можно указать конкретные типы или "all" для всех типов

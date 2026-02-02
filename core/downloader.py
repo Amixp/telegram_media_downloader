@@ -475,18 +475,64 @@ class DownloadManager:
                         if self._is_exist(file_name):
                             file_name = get_next_name(file_name)
 
-                        # Скачать файл
-                        with tqdm(
-                            total=file_size, unit="B", unit_scale=True, desc=desc
-                        ) as pbar:
-                            # pylint: disable=cell-var-from-loop
-                            download_path = await client.download_media(
-                                message,
-                                file=file_name,
-                                progress_callback=lambda c, t: self._progress_callback(
-                                    c, t, pbar
-                                ),
-                            )
+                        # Настройки докачки
+                        download_settings = self.config.get("download_settings", {})
+                        resumable = download_settings.get("resumable_downloads", True)
+                        cache_dir = download_settings.get("cache_directory", ".download_cache")
+
+                        if resumable:
+                            # Создать директорию кэша если её нет
+                            if not os.path.isabs(cache_dir):
+                                cache_dir = os.path.join(PROJECT_ROOT, cache_dir)
+                            if not os.path.exists(cache_dir):
+                                os.makedirs(cache_dir, exist_ok=True)
+
+                            # Формируем имя временного файла (по ID сообщения и чата для уникальности)
+                            part_file = os.path.join(cache_dir, f"{chat_id}_{message.id}.part")
+                            current_size = os.path.getsize(part_file) if os.path.exists(part_file) else 0
+
+                            # Проверка: если вдруг файл на диске больше чем в ТГ (ошибка?), начинаем заново
+                            if current_size >= file_size and file_size > 0:
+                                if current_size > file_size:
+                                    logger.warning("Размер кэша (%s) больше размера файла (%s), сброс", current_size, file_size)
+                                    if os.path.exists(part_file):
+                                        os.remove(part_file)
+                                    current_size = 0
+                                else:
+                                    # Файл уже полностью скачан в кэш, но не переименован
+                                    logger.debug("Файл %s уже полностью в кэше", message.id)
+
+                            mode = "ab" if current_size > 0 else "wb"
+
+                            with tqdm(
+                                total=file_size, unit="B", unit_scale=True, desc=desc, initial=current_size
+                            ) as pbar:
+                                with open(part_file, mode) as f:
+                                    await client.download_media(
+                                        message,
+                                        file=f,
+                                        offset=current_size,
+                                        progress_callback=lambda c, t: self._progress_callback(
+                                            c, t, pbar
+                                        ),
+                                    )
+
+                            # Переименовать после успешной загрузки
+                            os.rename(part_file, file_name)
+                            download_path = file_name
+                        else:
+                            # Скачать файл без докачки
+                            with tqdm(
+                                total=file_size, unit="B", unit_scale=True, desc=desc
+                            ) as pbar:
+                                # pylint: disable=cell-var-from-loop
+                                download_path = await client.download_media(
+                                    message,
+                                    file=file_name,
+                                    progress_callback=lambda c, t: self._progress_callback(
+                                        c, t, pbar
+                                    ),
+                                )
 
                     # Всегда проверять дубликаты после загрузки (если включено)
                     if download_path and skip_duplicates:
