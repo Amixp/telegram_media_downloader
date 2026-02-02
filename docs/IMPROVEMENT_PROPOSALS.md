@@ -1051,10 +1051,11 @@ class AdvancedDeduplicator:
 ### Этап 1: Критичные улучшения (1-2 недели)
 1. ✅ [DONE] Resumable downloads
 2. ✅ [DONE] Прогресс для множественных чатов
-3. ✅ Database backend
+3. ✅ [DONE] Database backend (ClickHouse)
 
 ### Этап 2: Важные фичи (2-4 недели)
-4. ✅ Web Dashboard
+4. ✅ [DONE] Automatic Archive Extraction
+5. ✅ Web Dashboard
 5. ✅ Планировщик загрузок
 6. ✅ Экспорт в PDF/EPUB/MD
 

@@ -30,6 +30,7 @@ from utils.file_management import get_next_name, manage_duplicate_file
 from utils.clickhouse_db import ClickHouseMetadataDB
 from utils.history import MessageHistory
 from utils.i18n import get_i18n
+from utils.archive_handler import ArchiveHandler
 from utils.log import configure_logging
 from utils.media_utils import get_media_type, sanitize_filename
 from utils.validation import validate_archive_file, validate_downloaded_media
@@ -59,6 +60,9 @@ class DownloadManager:
         self.downloaded_files: Dict[Tuple[int, int], str] = {}  # {(chat_id, message_id): file_path}
         # ClickHouse
         self.clickhouse_db = ClickHouseMetadataDB(self.config.get("clickhouse", {}))
+        # Archive Extraction
+        download_settings = self.config.get("download_settings", {})
+        self.archive_handler = ArchiveHandler(download_settings.get("archive_settings", {}))
         self.i18n = get_i18n(self.config.get("language", "ru"))
         self.media_filter = MediaFilter(self.config)
 
@@ -609,25 +613,25 @@ class DownloadManager:
                         validate_downloads = self.config.get("download_settings", {}).get(
                             "validate_downloads", True
                         )
-                        if validate_downloads and not validate_downloaded_media(
-                            download_path,
-                            _type,
-                            file_size if file_size else None,
-                            check_signature=True,
-                        ):
-                            logger.warning(
-                                self.i18n.t(
-                                    "validation_failed_media",
-                                    path=download_path,
-                                    id=message.id,
+                        # Валидировать медиафайл после загрузки (если включено)
+                        if validate_downloads:
+                            is_valid = validate_downloaded_media(download_path, message)
+                            if not is_valid:
+                                logger.error(
+                                    self.i18n.t("validation_failed_media", id=message.id, path=download_path)
                                 )
-                            )
-                            self.failed_ids.append((chat_id, message.id))
-                        else:
-                            logger.info(self.i18n.t("downloaded", path=download_path))
-                            logger.debug("Успешно загружено сообщение %s", message.id)
-                            self.downloaded_files[(chat_id, message.id)] = download_path
-                            self.downloaded_ids.append((chat_id, message.id))
+                                if os.path.exists(download_path):
+                                    os.remove(download_path)
+                                self.failed_ids.append((chat_id, message.id))
+                                break
+
+                            # Распаковка если это архив
+                            self.archive_handler.extract_if_archive(download_path)
+
+                        logger.info(self.i18n.t("downloaded", path=download_path))
+                        logger.debug("Успешно загружено сообщение %s", message.id)
+                        self.downloaded_files[(chat_id, message.id)] = download_path
+                        self.downloaded_ids.append((chat_id, message.id))
                 break
             except FileReferenceExpiredError:
                 logger.warning(

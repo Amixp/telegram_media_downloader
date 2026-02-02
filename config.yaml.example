@@ -37,6 +37,21 @@ download_settings:
   resumable_downloads: true
   # Директория для временных файлов (.part)
   cache_directory: ".download_cache"
+  # Автоматическая распаковка архивов
+  archive_settings:
+    # Распаковывать архивы после загрузки
+    extract_archives: false
+    # Удалять архив после успешной распаковки
+    delete_after_extraction: false
+    # Директория для распаковки (пусто = рядом с архивом в подпапке)
+    extraction_directory: ""
+    # Поддерживаемые расширения (zip, tar, gz, bz2, xz)
+    supported_extensions:
+      - zip
+      - tar
+      - gz
+      - bz2
+      - xz
 
 # Типы медиа для загрузки
 # Можно указать конкретные типы или "all" для всех типов

@@ -1,6 +1,12 @@
 from typing import Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 
+class ArchiveSettings(BaseModel):
+    extract_archives: bool = False
+    delete_after_extraction: bool = False
+    extraction_directory: str = ""
+    supported_extensions: List[str] = ["zip", "tar", "gz", "bz2", "xz"]
+
 class DownloadSettings(BaseModel):
     max_parallel_downloads: Optional[int] = 5
     pagination_limit: int = 100
@@ -15,6 +21,7 @@ class DownloadSettings(BaseModel):
     auto_add_chats_from_links: bool = False
     resumable_downloads: bool = True
     cache_directory: str = ".download_cache"
+    archive_settings: ArchiveSettings = Field(default_factory=ArchiveSettings)
 
 class SenderFilter(BaseModel):
     enabled: bool = False
