@@ -306,7 +306,12 @@ class DownloadManager:
             if progress_bar.total != total:
                 progress_bar.total = total
                 progress_bar.reset()
-            progress_bar.update(current - progress_bar.n)
+
+            # Defensive check for mock objects in tests
+            n = getattr(progress_bar, "n", 0)
+            if not isinstance(n, (int, float)):
+                n = 0
+            progress_bar.update(current - n)
 
         # Web Update
         if self.web_app:
@@ -399,7 +404,6 @@ class DownloadManager:
 
         if _type in ["voice", "video_note"]:
             # Форматировать дату безопасно для Windows
-            # Вместо 2025-12-23T08:04:10+00:00 → 2025-12-23_08-04-10
             date_str = media_obj.date.strftime("%Y-%m-%d_%H-%M-%S")
             file_name: str = os.path.join(
                 base_dir,
@@ -417,7 +421,7 @@ class DownloadManager:
             if file_name_base == "":
                 if hasattr(media_obj, "id"):
                     file_name_base = f"{_type}_{media_obj.id}"
-        file_name = os.path.join(base_dir, _type, file_name_base)
+            file_name = os.path.join(base_dir, _type, file_name_base)
         return file_name, file_format
 
 
@@ -435,7 +439,7 @@ class DownloadManager:
         except Exception as e:
             logger.debug(f"Web broadcast failed: {e}")
 
-    async def _download_media(  # pylint: disable=too-many-locals
+    async def download_media(  # pylint: disable=too-many-locals
         self,
         client: TelegramClient,
         message: Message,
@@ -573,27 +577,31 @@ class DownloadManager:
                             if progress and task_id:
                                 progress.update(task_id, description=desc, total=file_size, completed=current_size, visible=True)
                                 with open(part_file, mode) as f:
-                                    await client.download_media(
-                                        message,
-                                        file=f,
+                                    async for chunk in client.iter_download(
+                                        message.media,
                                         offset=current_size,
-                                        progress_callback=lambda c, t: self._progress_callback(
-                                            c, t, progress=progress, task_id=task_id
-                                        ),
-                                    )
+                                        request_size=1024 * 1024
+                                    ):
+                                        f.write(chunk)
+                                        current_size += len(chunk)
+                                        self._progress_callback(
+                                            current_size, file_size, progress=progress, task_id=task_id
+                                        )
                             else:
                                 with tqdm(
                                     total=file_size, unit="B", unit_scale=True, desc=desc, initial=current_size
                                 ) as pbar:
                                     with open(part_file, mode) as f:
-                                        await client.download_media(
-                                            message,
-                                            file=f,
+                                        async for chunk in client.iter_download(
+                                            message.media,
                                             offset=current_size,
-                                            progress_callback=lambda c, t: self._progress_callback(
-                                                c, t, progress_bar=pbar
-                                            ),
-                                        )
+                                            request_size=1024 * 1024
+                                        ):
+                                            f.write(chunk)
+                                            current_size += len(chunk)
+                                            self._progress_callback(
+                                                current_size, file_size, progress_bar=pbar
+                                            )
 
                             # Переименовать после успешной загрузки
                             os.rename(part_file, file_name)
@@ -789,12 +797,12 @@ class DownloadManager:
         async def download_with_semaphore(message):
             if semaphore:
                 async with semaphore:
-                    return await self._download_media(
+                    return await self.download_media(
                         client, message, media_types, file_formats, download_directory,
                         progress=progress, task_id=task_id
                     )
             else:
-                return await self._download_media(
+                return await self.download_media(
                     client, message, media_types, file_formats, download_directory,
                     progress=progress, task_id=task_id
                 )

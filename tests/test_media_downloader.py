@@ -150,16 +150,17 @@ class MockClient:
             return None
         return file or "downloaded"
 
-    def iter_messages(self, chat_id, min_id=0, reverse=False):  # noqa: ANN001
+    async def iter_messages(self, chat_id, min_id=0, reverse=False):  # noqa: ANN001
         # Минимальная заглушка для тестов: возвращает async-генератор
         self.last_iter_params = {"chat_id": chat_id, "min_id": min_id, "reverse": reverse}
 
-        async def _gen():
-            if hasattr(self, "_iter_messages"):
-                for m in self._iter_messages:  # type: ignore[attr-defined]
-                    yield m
-            return
+        if hasattr(self, "_iter_messages"):
+            for m in self._iter_messages:  # type: ignore[attr-defined]
+                yield m
 
+    def iter_download(self, *args, **kwargs):
+        async def _gen():
+            yield b"chunk"
         return _gen()
 
 
@@ -393,16 +394,20 @@ class MediaDownloaderTestCase(unittest.TestCase):
             video=MockVideo(file_name="large_video.mp4", mime_type="video/mp4", size=1024),
         )
 
-        # We need to mock client.download_media to verify arguments
-        client.download_media = mock.AsyncMock(return_value="large_video.mp4")
+        # We need to mock client.iter_download to verify arguments
+        async def mock_iter_download(*args, **kwargs):
+            yield b"chunk_from_offset"
+
+        client.iter_download = mock.Mock(side_effect=mock_iter_download)
 
         result = self.loop.run_until_complete(dm.download_media(client, msg, ["video"], {"video": ["all"]}))
 
-        # Verify Telethon was called with correct offset and file object
-        client.download_media.assert_called_once()
-        args, kwargs = client.download_media.call_args
+        # Verify Telethon was called with correct offset
+        client.iter_download.assert_called_once()
+        args, kwargs = client.iter_download.call_args
         self.assertEqual(kwargs["offset"], 512)
-        self.assertEqual(kwargs["file"], mock_file)
+        # Verify chunk was written
+        mock_file.write.assert_called_once_with(b"chunk_from_offset")
 
         # Verify rename was called
         mock_rename.assert_called_once()
