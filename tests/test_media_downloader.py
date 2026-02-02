@@ -16,6 +16,7 @@ from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
 from media_downloader import DownloadManager
 from utils.config import ConfigManager
+from utils.media_utils import get_media_type
 from utils.validation import validate_archive_file
 
 
@@ -186,7 +187,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         mgr.load()
         return DownloadManager(mgr)
 
-    @mock.patch("media_downloader.THIS_DIR", new=MOCK_DIR)
+    @mock.patch("core.downloader.PROJECT_ROOT", new=MOCK_DIR)
     def test_get_media_meta(self):
         dm = self._make_manager()
 
@@ -262,7 +263,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         dm = self._make_manager()
 
         msg = MockMessage(id=1, media=True, photo=MockPhoto(date=datetime(2019, 8, 5, 14, 35, 12)))
-        self.assertEqual(dm.get_media_type(msg), "photo")
+        self.assertEqual(get_media_type(msg), "photo")
 
         doc_attr = mock.Mock()
         doc_attr.voice = None
@@ -272,34 +273,34 @@ class MediaDownloaderTestCase(unittest.TestCase):
             media=True,
             document=MockDocument(mime_type="application/pdf", attributes=[doc_attr]),
         )
-        self.assertEqual(dm.get_media_type(msg), "document")
+        self.assertEqual(get_media_type(msg), "document")
 
         audio_attr = mock.Mock()
         audio_attr.voice = False
         audio_attr.round_message = None
         msg = MockMessage(id=3, media=True, document=MockDocument(mime_type="audio/mp3", attributes=[audio_attr]))
-        self.assertEqual(dm.get_media_type(msg), "audio")
+        self.assertEqual(get_media_type(msg), "audio")
 
         voice_attr = mock.Mock()
         voice_attr.voice = True
         voice_attr.round_message = None
         msg = MockMessage(id=4, media=True, document=MockDocument(mime_type="audio/ogg", attributes=[voice_attr]))
-        self.assertEqual(dm.get_media_type(msg), "voice")
+        self.assertEqual(get_media_type(msg), "voice")
 
         video_attr = mock.Mock()
         video_attr.voice = None
         video_attr.round_message = False
         msg = MockMessage(id=5, media=True, document=MockDocument(mime_type="video/mp4", attributes=[video_attr]))
-        self.assertEqual(dm.get_media_type(msg), "video")
+        self.assertEqual(get_media_type(msg), "video")
 
         vn_attr = mock.Mock()
         vn_attr.voice = None
         vn_attr.round_message = True
         msg = MockMessage(id=6, media=True, document=MockDocument(mime_type="video/mp4", attributes=[vn_attr]))
-        self.assertEqual(dm.get_media_type(msg), "video_note")
+        self.assertEqual(get_media_type(msg), "video_note")
 
         msg = MockMessage(id=7, media=None)
-        self.assertIsNone(dm.get_media_type(msg))
+        self.assertIsNone(get_media_type(msg))
 
     def test_is_exist(self):
         dm = self._make_manager()
@@ -319,8 +320,8 @@ class MediaDownloaderTestCase(unittest.TestCase):
             dm._progress_callback(50, 100, pbar)  # type: ignore
             self.assertEqual(pbar.n, 50)
 
-    @mock.patch("media_downloader.tqdm")
-    @mock.patch("media_downloader.THIS_DIR", new=MOCK_DIR)
+    @mock.patch("core.downloader.tqdm")
+    @mock.patch("core.downloader.PROJECT_ROOT", new=MOCK_DIR)
     def test_download_media(self, mock_tqdm):
         dm = self._make_manager()
         client = MockClient()

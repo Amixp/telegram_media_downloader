@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-media-downloader"
+description = "A simple script to download media from telegram"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT License"}
+authors = [
+  {name = "Dineshkarthik Raveendran", email = "hello@dineshkarthik.me"},
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet",
+    "Topic :: Communications",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "PyYAML>=6.0.2",
+    "rich==14.1.0",
+    "telethon>=1.38.0",
+    "tqdm>=4.64.0",
+    "PySocks>=1.7.1",
+    "pydantic>=2.0.0",
+    "Jinja2>=3.1.0",
+]
+dynamic = ["version"]
+
+[project.urls]
+"Tracker" = "https://github.com/Dineshkarthik/telegram_media_downloader/issues"
+"Community" = "https://t.me/tgmdnews"
+"Source" = "https://github.com/Dineshkarthik/telegram_media_downloader"
+
+[tool.setuptools.dynamic]
+version = {attr = "utils.meta.__version__"}
+
+[tool.setuptools]
+py-modules = ["media_downloader"]
+packages = ["utils", "utils.chat_selector", "utils.file_management", "utils.log", "utils.meta", "utils.proxy", "utils.updates", "utils.validation", "utils.config", "utils.filter", "utils.history", "utils.i18n", "utils.config_schema"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pylint.messages_control]
+disable = [
+    "C0111", # missing-docstring
+    "C0103", # invalid-name
+    "C0330", # bad-continuation
+    "E0401", # import-error
+]
+
+[tool.pylint.format]
+max-line-length = 100

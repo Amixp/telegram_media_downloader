@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram History Viewer</title>
+    <style>
+        :root {
+            --bg-color: #0f0f0f;
+            --card-bg: #212121;
+            --text-color: #e4e4e4;
+            --text-secondary: #8e8e93;
+            --accent-color: #8774e1;
+            --border-color: #2f2f2f;
+        }
+
+        [data-theme="light"] {
+            --bg-color: #f4f4f5;
+            --card-bg: #ffffff;
+            --text-color: #000000;
+            --text-secondary: #707579;
+            --accent-color: #3390ec;
+            --border-color: #e4e4e5;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-color);
+            color: var(--text-color);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .header h1 {
+            font-size: 42px;
+            font-weight: 600;
+        }
+
+        .header p {
+            font-size: 16px;
+            color: var(--text-secondary);
+        }
+
+        .theme-toggle {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 10px 20px;
+            font-size: 20px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .theme-toggle:hover {
+            transform: scale(1.05);
+        }
+
+        .chats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
+        .chat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            transition: transform 0.2s, border-color 0.2s;
+            cursor: pointer;
+            text-decoration: none;
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chat-card:hover {
+            transform: translateY(-4px);
+            border-color: var(--accent-color);
+        }
+
+        .chat-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-color), #6b5ce7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            margin-bottom: 16px;
+        }
+
+        .chat-name {
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .chat-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+
+        .chat-stats {
+            display: flex;
+            gap: 16px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
+            margin-top: auto;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            color: var(--text-secondary);
+            background: var(--card-bg);
+            border: 2px dashed var(--border-color);
+            border-radius: 16px;
+        }
+
+        .empty-state-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+
+        .empty-state h2 {
+            font-size: 24px;
+            margin-bottom: 12px;
+            color: var(--text-color);
+        }
+
+        @media (max-width: 768px) {
+            .chats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body data-theme="dark">
+    <div class="container">
+        <div class="header">
+            <h1>📱 Telegram History</h1>
+            <p>Просмотр сохранённых чатов</p>
+            <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+        </div>
+        <div class="chats-grid">
+            {% if chats %}
+                {% for chat in chats %}
+                    {% if chat.has_html %}
+                    <a href="{{ chat.href }}" class="chat-card">
+                    {% else %}
+                    <div class="chat-card" style="cursor: default; opacity: 0.7;">
+                    {% endif %}
+                        <div class="chat-avatar">{{ chat.avatar_letter }}</div>
+                        <div class="chat-name">{{ chat.title }}</div>
+                        <div class="chat-info">
+                            <span>💬 {{ chat.count }}</span>
+                            <span>{{ chat.date_str }}</span>
+                        </div>
+                        <div class="chat-stats">
+                            <div class="stat-item">
+                                <span>📊</span>
+                                <span>{{ chat.count }} сообщений</span>
+                            </div>
+                        </div>
+                    {% if chat.has_html %}
+                    </a>
+                    {% else %}
+                    </div>
+                    {% endif %}
+                {% endfor %}
+            {% else %}
+                <div class="empty-state" style="grid-column: 1 / -1;">
+                    <div class="empty-state-icon">💬</div>
+                    <h2>Пока нет сохранённых чатов</h2>
+                    <p>Запустите загрузку медиа, чтобы увидеть историю чатов здесь</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    <script>
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        document.body.setAttribute('data-theme', savedTheme);
+
+        function toggleTheme() {
+            const body = document.body;
+            const currentTheme = body.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            body.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        }
+    </script>
+</body>
+</html>

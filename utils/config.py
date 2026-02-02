@@ -1,10 +1,12 @@
 """Утилиты для управления конфигурацией."""
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
+from pydantic import ValidationError
+
+from utils.config_schema import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -48,82 +50,44 @@ class ConfigManager:
             raise FileNotFoundError(f"Файл конфигурации не найден: {self.config_path}")
 
         with open(self.config_path, "r", encoding="utf-8") as f:
-            self._config = yaml.safe_load(f) or {}
+            raw_config = yaml.safe_load(f) or {}
 
-        self.validate()
+        # Validate with Pydantic
+        try:
+            # We use construct/parse or direct instantiation.
+            # AppConfig(**raw_config) will validation types and defaults.
+            app_config = AppConfig(**raw_config)
+            # Dump back to dict to maintain compatibility with existing code
+            self._config = app_config.model_dump(exclude_none=True)
+            # Restore specific 'None' logic if needed, but exclude_none=True clears Optional fields that are None.
+            # However, existing code might expect keys to be missing rather than None?
+            # Or keys to be present as None?
+            # Let's check: in the original validate, it checks keys existence.
+            # Pydantic's model_dump() with defaults is safer.
+            # Actually, let's keep it simple:
+            # self._config = app_config.model_dump() 
+            # But we must ensure that `api_id` and `api_hash` which might be None if valid (via validator?)
+            # Wait, the validator returns None if it's "your_api_id".
+            # So api_id can be None.
+            
+        except ValidationError as e:
+            logger.error("❌ Ошибка валидации конфигурации:")
+            for error in e.errors():
+                loc = " -> ".join(str(l) for l in error["loc"])
+                logger.error(f"   Поле '{loc}': {error['msg']}")
+            raise ValueError("Конфигурация некорректна (см. лог выше)") from e
+
         return self._config
 
     def validate(self) -> None:
         """
         Валидация конфигурации.
-
-        Raises
-        ------
-        ValueError
-            Если конфигурация некорректна.
+        
+        В новой версии валидация происходит при load().
+        Этот метод оставлен для совместимости, но он просто проверяет, что конфиг загружен.
         """
         if self._config is None:
             raise ValueError("Конфигурация не загружена. Вызовите load() сначала.")
-
-        # Проверка обязательных полей
-        required_fields = ["api_id", "api_hash"]
-        for field in required_fields:
-            if field not in self._config:
-                raise ValueError(f"Отсутствует обязательное поле: {field}")
-
-        # Валидация api_id
-        if not isinstance(self._config["api_id"], int):
-            raise ValueError("api_id должен быть целым числом")
-
-        # Валидация api_hash
-        if not isinstance(self._config["api_hash"], str) or not self._config["api_hash"]:
-            raise ValueError("api_hash должен быть непустой строкой")
-
-        # Валидация media_types
-        if "media_types" in self._config:
-            valid_media_types = [
-                "audio",
-                "document",
-                "photo",
-                "video",
-                "voice",
-                "video_note",
-                "all",
-            ]
-            media_types = self._config["media_types"]
-            if isinstance(media_types, list):
-                for media_type in media_types:
-                    if media_type not in valid_media_types:
-                        raise ValueError(
-                            f"Некорректный тип медиа: {media_type}. "
-                            f"Допустимые значения: {', '.join(valid_media_types)}"
-                        )
-            elif media_types not in valid_media_types:
-                raise ValueError(
-                    f"Некорректный тип медиа: {media_types}. "
-                    f"Допустимые значения: {', '.join(valid_media_types)}"
-                )
-
-        # Валидация file_formats
-        if "file_formats" in self._config:
-            file_formats = self._config["file_formats"]
-            if not isinstance(file_formats, dict):
-                raise ValueError("file_formats должен быть словарем")
-
-            for media_type, formats in file_formats.items():
-                if not isinstance(formats, list):
-                    raise ValueError(
-                        f"file_formats[{media_type}] должен быть списком"
-                    )
-
-        # Валидация proxy
-        if "proxy" in self._config:
-            # Отложенный импорт для избежания циклической зависимости
-            from utils.proxy import validate_proxy_config
-
-            if not validate_proxy_config(self._config["proxy"]):
-                logger.warning("⚠️ Конфигурация прокси невалидна, прокси не будет использован")
-                self._config["proxy"] = None
 
     def save(self, config: Optional[Dict[str, Any]] = None) -> None:
         """

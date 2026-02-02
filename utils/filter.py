@@ -25,7 +25,7 @@ class MediaFilter:
         self.enabled = self.sender_filter.get("enabled", False)
         self.user_ids = self.sender_filter.get("user_ids", [])
         self.usernames = self.sender_filter.get("usernames", [])
-        
+
         # Предупреждение если указаны usernames (пока не реализовано)
         if self.enabled and self.usernames and not self.user_ids:
             logger.warning(
@@ -33,7 +33,7 @@ class MediaFilter:
                 "Используйте user_ids для фильтрации по отправителю. "
                 "Фильтр по usernames будет проигнорирован."
             )
-        
+
         # Преобразование дат из конфига в datetime объекты
         self.start_date = self._parse_date(config.get("start_date"))
         self.end_date = self._parse_date(config.get("end_date"))
@@ -135,7 +135,10 @@ class MediaFilter:
         return True
 
     def should_download_by_date(
-        self, message_date, start_date=None, end_date=None
+        self,
+        message_date: datetime,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
     ) -> bool:
         """
         Проверить, нужно ли загружать сообщение по дате.
