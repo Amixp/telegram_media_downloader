@@ -324,11 +324,11 @@ class MediaDownloaderTestCase(unittest.TestCase):
     @mock.patch("core.downloader.os.makedirs")
     @mock.patch("core.downloader.os.path.exists")
     @mock.patch("core.downloader.os.path.getsize")
-    @mock.patch("core.downloader.os.rename")
+    @mock.patch("core.downloader.shutil.move")
     @mock.patch("core.downloader.open", create=True)
     @mock.patch("core.downloader.tqdm")
     @mock.patch("core.downloader.PROJECT_ROOT", new=MOCK_DIR)
-    def test_download_media(self, mock_tqdm, mock_open, mock_rename, mock_getsize, mock_exists, mock_makedirs):
+    def test_download_media(self, mock_tqdm, mock_open, mock_move, mock_getsize, mock_exists, mock_makedirs):
         # Selective mock for exists to allow config file to "exist"
         real_exists = os.path.exists
         def side_effect(path):
@@ -365,7 +365,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
     @mock.patch("core.downloader.os.makedirs")
     @mock.patch("core.downloader.os.path.exists")
     @mock.patch("core.downloader.os.path.getsize")
-    @mock.patch("core.downloader.os.rename")
+    @mock.patch("core.downloader.shutil.move")
     @mock.patch("core.downloader.open", create=True)
     @mock.patch("core.downloader.tqdm")
     @mock.patch("core.downloader.PROJECT_ROOT", new=MOCK_DIR)

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import shutil
 from typing import Dict, List, Optional, Tuple, Union
 
 from telethon import TelegramClient
@@ -604,7 +605,7 @@ class DownloadManager:
                                             )
 
                             # Переименовать после успешной загрузки
-                            os.rename(part_file, file_name)
+                            shutil.move(part_file, file_name)
                             download_path = file_name
                         else:
                             # Скачать файл без докачки
