@@ -97,6 +97,7 @@ class I18n:
                 "progress_downloading": "Загрузка",
                 "progress_completed": "Завершено",
                 "progress_failed": "Ошибка",
+                "processing_chats": "Обработка чатов ({count})",
             },
             "en": {
                 # General messages
@@ -147,6 +148,7 @@ class I18n:
                 "progress_downloading": "Downloading",
                 "progress_completed": "Completed",
                 "progress_failed": "Failed",
+                "processing_chats": "Processing chats ({count})",
             },
         }
 

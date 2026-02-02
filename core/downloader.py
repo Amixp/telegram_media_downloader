@@ -14,6 +14,16 @@ from telethon.tl.types import (
     Photo,
 )
 from tqdm import tqdm
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    BarColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    DownloadColumn,
+    TransferSpeedColumn,
+    TaskID,
+)
 
 from utils.config import ConfigManager
 from utils.file_management import get_next_name, manage_duplicate_file
@@ -265,23 +275,30 @@ class DownloadManager:
 
         return None
 
-    def _progress_callback(self, current: int, total: int, pbar: tqdm) -> None:
+    def _progress_callback(self, current, total, progress_bar=None, progress=None, task_id=None):
         """
-        Обновить прогресс-бар для загрузки файлов.
+        Callback для обновления прогресс-бара.
 
         Parameters
         ----------
         current: int
             Текущее количество загруженных байт.
         total: int
-            Общее количество байт для загрузки.
-        pbar: tqdm
-            Экземпляр прогресс-бара для обновления.
+            Общее количество байт.
+        progress_bar: Optional[tqdm]
+            Экземпляр tqdm.
+        progress: Optional[Progress]
+            Экземпляр rich.Progress.
+        task_id: Optional[TaskID]
+            ID задачи rich.
         """
-        if pbar.total != total:
-            pbar.total = total
-            pbar.reset()
-        pbar.update(current - pbar.n)
+        if progress and task_id:
+            progress.update(task_id, completed=current, total=total)
+        elif progress_bar:
+            if progress_bar.total != total:
+                progress_bar.total = total
+                progress_bar.reset()
+            progress_bar.update(current - progress_bar.n)
 
     def _sanitize_filename(self, filename: str) -> str:
         """
@@ -381,21 +398,21 @@ class DownloadManager:
         media_types: List[str],
         file_formats: dict,
         download_directory: Optional[str] = None,
+        progress: Optional[Progress] = None,
+        task_id: Optional[TaskID] = None,
     ) -> int:
         """
-        Загрузить медиа из Telegram.
-
-        Каждый файл загружается с 3 попытками с задержкой 5 секунд между попытками.
+        Загрузить медиа в соответствии с типом медиа.
 
         Parameters
         ----------
         client: TelegramClient
             Клиент для взаимодействия с API Telegram.
         message: Message
-            Объект сообщения из Telegram.
+            Объект сообщения Telegram.
         media_types: list
             Список строк типов медиа для загрузки.
-            Пример: ["audio", "photo"]
+            Пример: `["audio", "photo"]`
             Поддерживаемые форматы:
                 * audio
                 * document
@@ -408,6 +425,10 @@ class DownloadManager:
             для типов медиа `audio`, `document` & `video`.
         download_directory: Optional[str]
             Кастомная директория для загрузок. Если None, используется структура по умолчанию.
+        progress: Optional[Progress]
+            Экземпляр Progress для отображения прогресса.
+        task_id: Optional[TaskID]
+            ID задачи для отображения прогресса.
 
         Returns
         -------
@@ -499,40 +520,62 @@ class DownloadManager:
                                         os.remove(part_file)
                                     current_size = 0
                                 else:
-                                    # Файл уже полностью скачан в кэш, но не переименован
+                                    # Файл уже полностью скачан в кэше, но не переименован
                                     logger.debug("Файл %s уже полностью в кэше", message.id)
 
                             mode = "ab" if current_size > 0 else "wb"
 
-                            with tqdm(
-                                total=file_size, unit="B", unit_scale=True, desc=desc, initial=current_size
-                            ) as pbar:
+                            if progress and task_id:
+                                progress.update(task_id, description=desc, total=file_size, completed=current_size, visible=True)
                                 with open(part_file, mode) as f:
                                     await client.download_media(
                                         message,
                                         file=f,
                                         offset=current_size,
                                         progress_callback=lambda c, t: self._progress_callback(
-                                            c, t, pbar
+                                            c, t, progress=progress, task_id=task_id
                                         ),
                                     )
+                            else:
+                                with tqdm(
+                                    total=file_size, unit="B", unit_scale=True, desc=desc, initial=current_size
+                                ) as pbar:
+                                    with open(part_file, mode) as f:
+                                        await client.download_media(
+                                            message,
+                                            file=f,
+                                            offset=current_size,
+                                            progress_callback=lambda c, t: self._progress_callback(
+                                                c, t, progress_bar=pbar
+                                            ),
+                                        )
 
                             # Переименовать после успешной загрузки
                             os.rename(part_file, file_name)
                             download_path = file_name
                         else:
                             # Скачать файл без докачки
-                            with tqdm(
-                                total=file_size, unit="B", unit_scale=True, desc=desc
-                            ) as pbar:
-                                # pylint: disable=cell-var-from-loop
+                            if progress and task_id:
+                                progress.update(task_id, description=desc, total=file_size, completed=0, visible=True)
                                 download_path = await client.download_media(
                                     message,
                                     file=file_name,
                                     progress_callback=lambda c, t: self._progress_callback(
-                                        c, t, pbar
+                                        c, t, progress=progress, task_id=task_id
                                     ),
                                 )
+                            else:
+                                with tqdm(
+                                    total=file_size, unit="B", unit_scale=True, desc=desc
+                                ) as pbar:
+                                    # pylint: disable=cell-var-from-loop
+                                    download_path = await client.download_media(
+                                        message,
+                                        file=file_name,
+                                        progress_callback=lambda c, t: self._progress_callback(
+                                            c, t, progress_bar=pbar
+                                        ),
+                                    )
 
                     # Всегда проверять дубликаты после загрузки (если включено)
                     if download_path and skip_duplicates:
@@ -653,6 +696,8 @@ class DownloadManager:
         file_formats: dict,
         download_directory: Optional[str] = None,
         semaphore: Optional[asyncio.Semaphore] = None,
+        progress: Optional[Progress] = None,
+        task_id: Optional[TaskID] = None,
     ) -> int:
         """
         Загрузить медиа из Telegram.
@@ -680,6 +725,10 @@ class DownloadManager:
             Кастомная директория для загрузок. Если None, используется структура по умолчанию.
         semaphore: Optional[asyncio.Semaphore]
             Семафор для ограничения параллельных загрузок.
+        progress: Optional[Progress]
+            Экземпляр Progress для отображения прогресса.
+        task_id: Optional[TaskID]
+            ID задачи для отображения прогресса.
 
         Returns
         -------
@@ -690,11 +739,13 @@ class DownloadManager:
             if semaphore:
                 async with semaphore:
                     return await self.download_media(
-                        client, message, media_types, file_formats, download_directory
+                        client, message, media_types, file_formats, download_directory,
+                        progress=progress, task_id=task_id
                     )
             else:
                 return await self.download_media(
-                    client, message, media_types, file_formats, download_directory
+                    client, message, media_types, file_formats, download_directory,
+                    progress=progress, task_id=task_id
                 )
 
         message_ids = await asyncio.gather(
@@ -781,22 +832,28 @@ class DownloadManager:
         self,
         client: TelegramClient,
         chat_id: int,
-        chat_title: Optional[str] = None,
-        pagination_limit: int = 100,
-    ) -> None:
+        chat_title: Optional[str],
+        pagination_limit: int,
+        progress: Optional[Progress] = None,
+        task_id: Optional[TaskID] = None,
+    ):
         """
-        Инициировать загрузку для конкретного чата.
+        Запустить импорт чата.
 
         Parameters
         ----------
         client: TelegramClient
-            Клиент Telethon (уже подключенный).
+            Клиент для взаимодействия с API Telegram.
         chat_id: int
-            ID чата для загрузки.
+            ID чата для импорта.
         chat_title: Optional[str]
             Название чата.
         pagination_limit: int
-            Количество сообщений для загрузки асинхронно как пакет.
+            Количество сообщений для обработки в одном пакете.
+        progress: Optional[Progress]
+            Экземпляр Progress для отображения прогресса.
+        task_id: Optional[TaskID]
+            ID задачи для отображения прогресса.
         """
         last_read_message_id: int = self.config.get("last_read_message_id", 0)
         from datetime import date, datetime, timezone
@@ -973,6 +1030,8 @@ class DownloadManager:
                         self.config.get("file_formats", {}),
                         download_directory,
                         semaphore,
+                        progress=progress,
+                        task_id=task_id,
                     )
                     # Проверка max_messages только для текущего чата
                     chat_downloaded_count = sum(
@@ -997,6 +1056,8 @@ class DownloadManager:
                 self.config.get("file_formats", {}),
                 download_directory,
                 semaphore,
+                progress=progress,
+                task_id=task_id,
             )
 
         self.config["last_read_message_id"] = last_read_message_id
@@ -1010,3 +1071,72 @@ class DownloadManager:
         # Очистить downloaded_ids и failed_ids для текущего чата
         self.downloaded_ids = [(cid, msg_id) for (cid, msg_id) in self.downloaded_ids if cid != chat_id]
         self.failed_ids = [(cid, msg_id) for (cid, msg_id) in self.failed_ids if cid != chat_id]
+
+    async def begin_import_all_chats(
+        self,
+        client: TelegramClient,
+        queue_entries: List[dict],
+        pagination_limit: int
+    ):
+        """
+        Запустить импорт всех чатов из очереди с общим прогрессом.
+
+        Parameters
+        ----------
+        client: TelegramClient
+            Клиент для взаимодействия с API Telegram.
+        queue_entries: List[dict]
+            Очередь чатов для загрузки.
+        pagination_limit: int
+            Лимит пагинации.
+        """
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeElapsedColumn(),
+        ) as progress:
+            overall_task = progress.add_task(
+                f"[cyan]{self.i18n.t('processing_chats', count=len(queue_entries))}",
+                total=len(queue_entries)
+            )
+
+            for c in queue_entries:
+                chat_id = c["chat_id"]
+                chat_title = c.get("title", "")
+
+                chat_task = progress.add_task(
+                    f"[green]{chat_title or chat_id}",
+                    total=None,
+                    visible=False # Будет показан в download_media
+                )
+
+                logger.info(
+                    "Начало загрузки для чата: %s (chat_id=%s)",
+                    chat_title or chat_id,
+                    chat_id,
+                )
+
+                # Временно установить chat_id для этого чата
+                self.config["chat_id"] = chat_id
+
+                try:
+                    await self.begin_import_chat(
+                        client, chat_id, chat_title, pagination_limit,
+                        progress=progress, task_id=chat_task
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке чата {chat_title or chat_id}: {e}", exc_info=True)
+                finally:
+                    progress.update(chat_task, visible=False)
+                    progress.advance(overall_task)
+
+            if self.failed_ids:
+                logger.info(
+                    self.i18n.t("download_failed", count=len(set(self.failed_ids)))
+                    + "\n"
+                    + self.i18n.t("failed_ids_added")
+                )

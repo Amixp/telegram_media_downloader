@@ -115,28 +115,10 @@ async def main_async():
         if any("order" in c for c in queue_entries):
             queue_entries.sort(key=lambda c: int(c.get("order", 10**9)) if str(c.get("order", "")).lstrip("-").isdigit() else 10**9)
 
-        for c in queue_entries:
-            chat_id = c["chat_id"]
-            chat_title = c.get("title", "")
-            logger.info(
-                "Начало загрузки для чата: %s (chat_id=%s)",
-                chat_title or chat_id,
-                chat_id,
-            )
-            # Временно установить chat_id для этого чата
-            download_manager.config["chat_id"] = chat_id
-            await download_manager.begin_import_chat(
-                client, chat_id, chat_title, pagination_limit
-            )
-
-        if download_manager.failed_ids:
-            i18n = get_i18n()
-            logger.info(
-                i18n.t("download_failed", count=len(set(download_manager.failed_ids)))
-                + "\n"
-                + i18n.t("failed_ids_added")
-            )
-        check_for_updates()
+        # Запустить загрузку всех чатов с общим прогрессом
+        await download_manager.begin_import_all_chats(
+            client, queue_entries, pagination_limit
+        )
 
     finally:
         await session_manager.stop()
