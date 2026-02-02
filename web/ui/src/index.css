@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
   --primary: #3b82f6;
   --primary-glow: rgba(59, 130, 246, 0.5);
@@ -26,7 +30,7 @@ body {
   color: var(--text-main);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  overflow-x: auto; /* Изменено с hidden на auto для отображения полного контента */
 }
 
 .app-container {

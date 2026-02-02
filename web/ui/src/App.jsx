@@ -93,12 +93,12 @@ const Dashboard = () => {
       >
         <div className="relative z-10 grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
           <div className="space-y-4">
-            <h2 className="text-xl font-bold flex items-center gap-2 text-slate-200">
+            <h2 className="text-xl font-bold flex items-center gap-2 text-white">
               <Zap size={20} className="text-blue-400" /> Overall Progress
             </h2>
             <div className="flex items-end gap-3">
               <span className="text-5xl font-black text-white">{overallPercentage}%</span>
-              <span className="text-blue-400 font-medium mb-1">{progress.overall.status}</span>
+              <span className="text-blue-300 font-medium mb-1">{progress.overall.status}</span>
             </div>
 
             <div className="space-y-2">
@@ -110,7 +110,7 @@ const Dashboard = () => {
                   className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full"
                 />
               </div>
-              <div className="flex justify-between text-xs text-slate-400 font-medium">
+              <div className="flex justify-between text-sm text-slate-200 font-semibold">
                 <span>{progress.overall.completed} CHATS</span>
                 <span>{progress.overall.total} TOTAL</span>
               </div>
@@ -118,13 +118,13 @@ const Dashboard = () => {
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <div className="bg-slate-900/50 p-4 rounded-xl border border-white/5">
-              <p className="text-xs text-slate-500 uppercase tracking-wider font-bold">Speed</p>
-              <p className="text-2xl font-bold text-slate-100">{progress.overall.speed || '---'} MB/s</p>
+            <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-600/30">
+              <p className="text-xs text-slate-300 uppercase tracking-wider font-bold mb-2">Speed</p>
+              <p className="text-2xl font-bold text-white">{progress.overall.speed || '---'} MB/s</p>
             </div>
-            <div className="bg-slate-900/50 p-4 rounded-xl border border-white/5">
-              <p className="text-xs text-slate-500 uppercase tracking-wider font-bold">Time Left</p>
-              <p className="text-2xl font-bold text-slate-100">Calculating...</p>
+            <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-600/30">
+              <p className="text-xs text-slate-300 uppercase tracking-wider font-bold mb-2">Time Left</p>
+              <p className="text-2xl font-bold text-white">Calculating...</p>
             </div>
           </div>
         </div>
@@ -136,11 +136,11 @@ const Dashboard = () => {
         {/* Left Column: Active Downloads */}
         <div className="lg:col-span-2 space-y-8">
           <section className="glass-card p-6">
-            <h3 className="card-title text-slate-200"><Activity size={18} className="text-blue-400" /> Active Threads</h3>
+            <h3 className="card-title text-white"><Activity size={18} className="text-blue-400" /> Active Threads</h3>
             <div className="space-y-4 mt-4">
               <AnimatePresence>
                 {Object.entries(progress.active_downloads).length === 0 ? (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 text-slate-500 bg-slate-900/20 rounded-xl border border-dashed border-slate-800">
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 text-slate-400 bg-slate-900/20 rounded-xl border border-dashed border-slate-700">
                     <p>No active media downloads</p>
                   </motion.div>
                 ) : (
@@ -152,11 +152,11 @@ const Dashboard = () => {
                         initial={{ opacity: 0, x: -20 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: 20 }}
-                        className="bg-slate-900/40 p-4 rounded-xl border border-white/5 hover:border-blue-500/30 transition-all group"
+                        className="bg-slate-900/40 p-4 rounded-xl border border-slate-600/30 hover:border-blue-500/30 transition-all group"
                       >
                         <div className="flex justify-between items-center mb-2">
-                          <span className="text-sm font-semibold text-slate-200 truncate pr-4">{dl.description}</span>
-                          <span className="text-xs font-mono text-blue-400">{pct}%</span>
+                          <span className="text-sm font-semibold text-white truncate pr-4">{dl.description}</span>
+                          <span className="text-xs font-mono text-blue-300">{pct}%</span>
                         </div>
                         <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
                           <motion.div
@@ -174,11 +174,11 @@ const Dashboard = () => {
           </section>
 
           {/* Charts Section */}
-          {stats.enabled && (
+          {stats.enabled && stats.history && stats.history.length > 0 && (
              <section className="glass-card p-6">
-                <h3 className="card-title text-slate-200"><History size={18} className="text-indigo-400" /> Download History</h3>
-                <div className="h-64 mt-6">
-                  <ResponsiveContainer width="100%" height="100%">
+                <h3 className="card-title text-white"><History size={18} className="text-indigo-400" /> Download History</h3>
+                <div style={{ width: '100%', height: '256px' }} className="mt-6">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={300} minHeight={200}>
                     <AreaChart data={stats.history}>
                       <defs>
                         <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
@@ -186,11 +186,11 @@ const Dashboard = () => {
                           <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                      <XAxis dataKey="date" stroke="#64748b" fontSize={10} tickLine={false} axisLine={false} />
-                      <YAxis stroke="#64748b" fontSize={10} tickLine={false} axisLine={false} />
+                      <CartesianGrid strokeDasharray="3 3" stroke="#475569" vertical={false} />
+                      <XAxis dataKey="date" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+                      <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
                       <Tooltip
-                        contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
+                        contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px' }}
                         itemStyle={{ color: '#fff' }}
                       />
                       <Area type="monotone" dataKey="count" stroke="#3b82f6" fillOpacity={1} fill="url(#colorCount)" strokeWidth={2} />
@@ -204,19 +204,19 @@ const Dashboard = () => {
         {/* Right Column: Chat Queue & Stats */}
         <div className="space-y-8">
           <section className="glass-card p-6 h-full flex flex-col">
-            <h3 className="card-title text-slate-200"><Search size={18} className="text-emerald-400" /> Chat Statistics</h3>
+            <h3 className="card-title text-white"><Search size={18} className="text-emerald-400" /> Chat Statistics</h3>
             <div className="flex-1 overflow-y-auto mt-4 space-y-3 pr-2 scroll-list">
                {stats.chats.map((chat, idx) => (
-                 <div key={idx} className="bg-slate-900/40 p-3 rounded-lg border border-white/5 flex items-center justify-between hover:bg-slate-800/50 transition-colors cursor-default">
+                 <div key={idx} className="bg-slate-900/40 p-3 rounded-lg border border-slate-600/30 flex items-center justify-between hover:bg-slate-800/50 transition-colors cursor-default">
                     <div>
-                      <p className="text-sm font-bold text-slate-200">{chat.title}</p>
-                      <p className="text-[10px] text-slate-500 font-medium">{(chat.size / (1024*1024*1024)).toFixed(2)} GB • {chat.count} msgs</p>
+                      <p className="text-sm font-bold text-white">{chat.title}</p>
+                      <p className="text-[10px] text-slate-400 font-medium">{(chat.size / (1024*1024*1024)).toFixed(2)} GB • {chat.count} msgs</p>
                     </div>
-                    <ChevronRight size={14} className="text-slate-600" />
+                    <ChevronRight size={14} className="text-slate-500" />
                  </div>
                ))}
                {stats.chats.length === 0 && (
-                 <p className="text-center py-8 text-slate-600 italic">No historical data found</p>
+                 <p className="text-center py-8 text-slate-400 italic">No historical data found</p>
                )}
             </div>
           </section>
@@ -224,7 +224,7 @@ const Dashboard = () => {
 
       </div>
 
-      <footer className="text-center text-slate-600 text-[10px] uppercase tracking-widest font-bold pb-4">
+      <footer className="text-center text-slate-500 text-[10px] uppercase tracking-widest font-bold pb-4">
         Telegram Media Downloader © 2026 • Premium Analytics Edition
       </footer>
     </div>

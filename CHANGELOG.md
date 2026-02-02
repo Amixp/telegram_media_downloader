@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Настроен Tailwind CSS для Web Dashboard** (`web/ui/`)
+  - Установлен Tailwind CSS v3 с зависимостями (postcss, autoprefixer)
+  - Созданы конфигурационные файлы: `tailwind.config.js`, `postcss.config.js`
+  - Добавлены директивы Tailwind в `src/index.css`
+  - Обновлена документация в `web/ui/README.md` с инструкциями по установке и использованию
+
 ### Fixed
+- **Исправлен сломанный дизайн Web Dashboard**
+  - Исправлена проблема с отсутствием Tailwind CSS (классы не применялись)
+  - Улучшена контрастность и читаемость текста (заголовки белые вместо бледно-серых)
+  - Исправлена компоновка: колонки правильно распределены по странице (2/3 слева, 1/3 справа)
+  - Исправлена ошибка графика Recharts "width/height -1" (добавлены minWidth/minHeight)
+  - График Download History теперь отображается только при наличии данных
+  - Усилены границы карточек для лучшей визуальной иерархии
 - **Исправлен сбой Web Dashboard при запуске** (`web/app.py`)
   - Монтирование `StaticFiles` перенесено в конец файла, чтобы не перехватывать WebSocket и API запросы.
 - **Исправлен расчет размера файлов для Photo** (`core/downloader.py`)
