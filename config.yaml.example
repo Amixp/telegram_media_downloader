@@ -183,6 +183,17 @@ tui:
     move_up: ["K"]
     move_down: ["J"]
 
+# Настройки ClickHouse (опционально)
+clickhouse:
+  enabled: false
+  host: localhost
+  port: 9000
+  user: default
+  password: ""
+  database: telegram_downloader
+  # Размер пакета для вставки (сообщений)
+  batch_size: 1000
+
 # Список чатов для загрузки (поддерживается несколько чатов)
 # Если не указано, будет предложен интерактивный выбор
 chats:

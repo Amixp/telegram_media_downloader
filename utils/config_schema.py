@@ -112,6 +112,15 @@ class ChatConfig(BaseModel):
     enabled: bool = True
     order: Optional[int] = None
 
+class ClickHouseConfig(BaseModel):
+    enabled: bool = False
+    host: str = "localhost"
+    port: int = 9000
+    user: str = "default"
+    password: str = ""
+    database: str = "telegram_downloader"
+    batch_size: int = 1000
+
 class AppConfig(BaseModel):
     api_id: Optional[Union[int, str]] = None
     api_hash: Optional[str] = None
@@ -130,6 +139,7 @@ class AppConfig(BaseModel):
     chat_selection_ui: Literal["classic", "tui"] = "tui"
     tui: TuiConfig = Field(default_factory=TuiConfig)
     chats: List[ChatConfig] = []
+    clickhouse: ClickHouseConfig = Field(default_factory=ClickHouseConfig)
 
     # Legacy fields
     chat_id: Optional[int] = None

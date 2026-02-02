@@ -27,7 +27,7 @@ from rich.progress import (
 
 from utils.config import ConfigManager
 from utils.file_management import get_next_name, manage_duplicate_file
-from utils.filter import MediaFilter
+from utils.clickhouse_db import ClickHouseMetadataDB
 from utils.history import MessageHistory
 from utils.i18n import get_i18n
 from utils.log import configure_logging
@@ -57,6 +57,8 @@ class DownloadManager:
         self.failed_ids: List[Tuple[int, int]] = []  # [(chat_id, message_id), ...]
         self.downloaded_ids: List[Tuple[int, int]] = []  # [(chat_id, message_id), ...]
         self.downloaded_files: Dict[Tuple[int, int], str] = {}  # {(chat_id, message_id): file_path}
+        # ClickHouse
+        self.clickhouse_db = ClickHouseMetadataDB(self.config.get("clickhouse", {}))
         self.i18n = get_i18n(self.config.get("language", "ru"))
         self.media_filter = MediaFilter(self.config)
 
@@ -334,6 +336,24 @@ class DownloadManager:
 
         return filename
 
+    def _get_file_size(self, message: Message) -> int:
+        """Получить размер файла сообщения."""
+        if not message.media:
+            return 0
+
+        if isinstance(message.media, MessageMediaPhoto):
+            # Самый большой размер
+            sizes = getattr(message.media.photo, "sizes", [])
+            max_size = 0
+            for s in sizes:
+                s_size = getattr(s, "size", 0)
+                if isinstance(s_size, int) and s_size > max_size:
+                    max_size = s_size
+            return max_size
+        elif isinstance(message.media, MessageMediaDocument):
+            return message.media.document.size
+        return 0
+
     async def _get_media_meta(
         self,
         media_obj: Union[Document, Photo],
@@ -485,6 +505,7 @@ class DownloadManager:
                         chat_id=chat_id,
                         file_name=base_file_name,
                     )
+                    download_path = None
                     if existing_file:
                         # Файл уже существует и валиден - пропускаем скачивание
                         logger.info(
@@ -769,11 +790,11 @@ class DownloadManager:
         )
 
         # Сохранить историю ВСЕХ сообщений, если включено
-        if self.history_manager and messages:
+        if self.history_manager is not None:
             chat_title = getattr(chat, "title", None) if chat else None
             # Создать словарь только для текущего чата
             # Используем _chat_id из конфига для правильного сопоставления
-            chat_files = {
+            downloaded_files = {
                 msg_id: path
                 for (cid, msg_id), path in self.downloaded_files.items()
                 if cid == _chat_id
@@ -784,8 +805,36 @@ class DownloadManager:
                 len(messages),
             )
             self.history_manager.save_batch(
-                messages, _chat_id, chat_title, chat_files
+                messages, _chat_id, chat_title, downloaded_files
             )
+
+        # Сохранить в ClickHouse
+        if self.clickhouse_db.enabled:
+            chat_title = getattr(chat, "title", None) if chat else None
+            for message in messages:
+                msg_data = {
+                    "chat_id": _chat_id,
+                    "message_id": message.id,
+                    "date": message.date,
+                    "text": message.message or "",
+                    "media_type": get_media_type(message),
+                    "file_path": self.downloaded_files.get((_chat_id, message.id), ""),
+                    "file_size": self._get_file_size(message),
+                    "sender_id": message.sender_id or 0,
+                    "chat_title": chat_title or ""
+                }
+                await self.clickhouse_db.save_message(msg_data)
+
+            # Обновить информацию о чате
+            # Считаем общее количество сообщений и размер (приблизительно для текущего пакета)
+            current_chat_size = sum(self._get_file_size(m) for m in messages)
+            await self.clickhouse_db.update_chat_info(
+                _chat_id,
+                chat_title or f"Chat {_chat_id}",
+                len(messages),
+                current_chat_size
+            )
+            await self.clickhouse_db.flush()
 
         last_message_id: int = max(message_ids)
         return last_message_id
