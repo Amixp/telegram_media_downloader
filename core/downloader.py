@@ -6,7 +6,7 @@ import shutil
 from typing import Dict, List, Optional, Tuple, Union
 
 from telethon import TelegramClient
-from telethon.errors import FileMigrateError, FileReferenceExpiredError
+from telethon.errors import FileMigrateError, FileReferenceExpiredError, FloodWaitError
 from telethon.tl.types import (
     Document,
     Message,
@@ -504,6 +504,11 @@ class DownloadManager:
                 if self._can_download(_type, file_formats, file_format):
                     # Создать прогресс-бар для загрузки
                     file_size = getattr(media_obj, "size", 0)
+                    if not file_size and hasattr(media_obj, "sizes"):
+                        # Для фото берем размер самого крупного варианта
+                        large_size = [s for s in media_obj.sizes if hasattr(s, "size")]
+                        if large_size:
+                            file_size = max(s.size for s in large_size)
                     # Использовать оригинальное имя файла, если доступно, иначе сгенерированное
                     display_name = getattr(
                         media_obj, "file_name", os.path.basename(file_name)
@@ -683,6 +688,11 @@ class DownloadManager:
                     if chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
                     self.failed_ids.append((chat_id, message.id))
+            except FloodWaitError as e:
+                logger.warning(
+                    self.i18n.t("flood_wait_error", id=message.id, seconds=e.seconds)
+                )
+                await asyncio.sleep(e.seconds)
             except TimeoutError:
                 logger.warning(
                     self.i18n.t("timeout_error", id=message.id)
@@ -1244,3 +1254,16 @@ class DownloadManager:
                     + "\n"
                     + self.i18n.t("failed_ids_added")
                 )
+
+            # Финальный сброс буферов ClickHouse
+            await self.flush()
+
+    async def flush(self):
+        """Принудительно записывает все буферы (ClickHouse и др.) в БД."""
+        if self.clickhouse:
+            await self.clickhouse.flush()
+
+    def close(self):
+        """Закрывает все открытые ресурсы (соединения БД и др.)."""
+        if self.clickhouse:
+            self.clickhouse.close()

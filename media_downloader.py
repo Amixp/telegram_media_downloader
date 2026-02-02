@@ -143,6 +143,8 @@ async def main_async(args: argparse.Namespace):
             await downloader_task
 
     finally:
+        if 'download_manager' in locals():
+            download_manager.close()
         await session_manager.stop()
 
 

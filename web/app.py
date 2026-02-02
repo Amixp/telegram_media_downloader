@@ -20,13 +20,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Монтирование статических файлов
-import os
-static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-if os.path.exists(static_path):
-    app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
-
-# Хранилище подключенных WebSocket клиентов
+# Глобальное состояние
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -133,6 +127,12 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# Монтирование статических файлов (должно быть ПОСЛЕ всех остальных маршрутов)
+import os
+static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.exists(static_path):
+    app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
 
 def run_server(host="0.0.0.0", port=8000):
     import uvicorn
