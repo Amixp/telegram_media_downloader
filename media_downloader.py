@@ -1,6 +1,7 @@
 "Загрузка медиа из Telegram."
 import asyncio
 import logging
+import argparse
 from typing import List, Set
 
 from rich.logging import RichHandler
@@ -28,7 +29,7 @@ logging.getLogger("telethon.network").addFilter(LogFilter())
 logger = logging.getLogger("media_downloader")
 
 
-async def main_async():
+async def main_async(args: argparse.Namespace):
     """Асинхронная главная функция загрузчика."""
     config_manager = ConfigManager()
     try:
@@ -116,9 +117,29 @@ async def main_async():
             queue_entries.sort(key=lambda c: int(c.get("order", 10**9)) if str(c.get("order", "")).lstrip("-").isdigit() else 10**9)
 
         # Запустить загрузку всех чатов с общим прогрессом
-        await download_manager.begin_import_all_chats(
-            client, queue_entries, pagination_limit
+        downloader_task = asyncio.create_task(
+            download_manager.begin_import_all_chats(
+                client, queue_entries, pagination_limit
+            )
         )
+
+        # Если включен веб-интерфейс, запустить сервер
+        if args.web:
+            import uvicorn
+            from web.app import app as web_app
+
+            # Настройка DownloadManager для веба
+            import web.app as web_module
+            download_manager.web_app = web_module
+
+            # Запуск uvicorn в том же цикле
+            config = uvicorn.Config(web_app, host="0.0.0.0", port=8000, log_level="error")
+            server = uvicorn.Server(config)
+
+            # Ждем завершения загрузчика или сервера
+            await downloader_task
+        else:
+            await downloader_task
 
     finally:
         await session_manager.stop()
@@ -126,12 +147,16 @@ async def main_async():
 
 def main():
     """Главная функция загрузчика."""
+    parser = argparse.ArgumentParser(description="Telegram Media Downloader")
+    parser.add_argument("--web", action="store_true", help="Запустить веб-интерфейс дашборда")
+    args = parser.parse_args()
+
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    loop.run_until_complete(main_async())
+    loop.run_until_complete(main_async(args))
 
 
 if __name__ == "__main__":

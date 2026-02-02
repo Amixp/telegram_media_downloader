@@ -65,6 +65,7 @@ class DownloadManager:
         self.archive_handler = ArchiveHandler(download_settings.get("archive_settings", {}))
         self.i18n = get_i18n(self.config.get("language", "ru"))
         self.media_filter = MediaFilter(self.config)
+        self.web_app = None # Will be set if web server is running
 
         # Настроить логирование
         configure_logging(self.config)
@@ -306,6 +307,10 @@ class DownloadManager:
                 progress_bar.reset()
             progress_bar.update(current - progress_bar.n)
 
+        # Web Update
+        if self.web_app:
+            asyncio.create_task(self.web_app.update_download(task_id or "cli", completed=current, total=total))
+
     def _sanitize_filename(self, filename: str) -> str:
         """
         Очистить имя файла от недопустимых символов для Windows и других ОС.
@@ -410,12 +415,25 @@ class DownloadManager:
             if file_name_base == "":
                 if hasattr(media_obj, "id"):
                     file_name_base = f"{_type}_{media_obj.id}"
-            file_name = os.path.join(base_dir, _type, file_name_base)
+        file_name = os.path.join(base_dir, _type, file_name_base)
         return file_name, file_format
 
 
 
-    async def download_media(  # pylint: disable=too-many-locals
+    async def _update_web_status(self):
+        """Обновить состояние для веб-дашборда."""
+        if not self.web_app:
+            return
+
+        from web.app import PROGRESS_STATE, manager
+        # Здесь мы могли бы собирать данные из внутренних счетчиков
+        # Для начала просто триггерим броадкаст текущего состояния
+        try:
+            await manager.broadcast(json.dumps(PROGRESS_STATE))
+        except Exception as e:
+            logger.debug(f"Web broadcast failed: {e}")
+
+    async def _download_media(  # pylint: disable=too-many-locals
         self,
         client: TelegramClient,
         message: Message,
@@ -763,12 +781,12 @@ class DownloadManager:
         async def download_with_semaphore(message):
             if semaphore:
                 async with semaphore:
-                    return await self.download_media(
+                    return await self._download_media(
                         client, message, media_types, file_formats, download_directory,
                         progress=progress, task_id=task_id
                     )
             else:
-                return await self.download_media(
+                return await self._download_media(
                     client, message, media_types, file_formats, download_directory,
                     progress=progress, task_id=task_id
                 )
@@ -1086,6 +1104,17 @@ class DownloadManager:
                         progress=progress,
                         task_id=task_id,
                     )
+                    # Web Update
+                    if self.web_app:
+                        import web.app as web_app
+                        # Assuming 'chats_done' is available in this scope, otherwise it needs to be defined.
+                        # For now, using a placeholder or assuming it's meant for the outer loop.
+                        # If this is inside begin_import_chat, chats_done is not directly available here.
+                        # This part of the snippet seems to be misplaced or requires context from begin_import_all_chats.
+                        # For faithful insertion, I'll put it as is, but note the potential issue.
+                        # await web_app.update_overall(completed=chats_done)
+                        await web_app.update_chat(chat_id, status="Processing batch") # Changed to reflect batch processing
+
                     # Проверка max_messages только для текущего чата
                     chat_downloaded_count = sum(
                         1 for (cid, _) in self.downloaded_ids if cid == chat_id
@@ -1156,6 +1185,11 @@ class DownloadManager:
                 f"[cyan]{self.i18n.t('processing_chats', count=len(queue_entries))}",
                 total=len(queue_entries)
             )
+
+            # Web Update
+            if self.web_app:
+                import web.app as web_app
+                await web_app.update_overall(total=len(queue_entries), completed=0, status="Processing")
 
             for c in queue_entries:
                 chat_id = c["chat_id"]

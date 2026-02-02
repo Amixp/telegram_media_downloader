@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Downloader Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        <header>
+            <div class="logo">
+                <span class="icon">🚀</span>
+                <h1>Telegram Media Downloader</h1>
+            </div>
+            <div class="server-status">
+                <span id="connection-status" class="status-badge disconnected">Disconnected</span>
+            </div>
+        </header>
+
+        <main>
+            <section id="overall-progress" class="card">
+                <h2>Overall Progress</h2>
+                <div class="progress-info">
+                    <span id="overall-status">Idle</span>
+                    <span id="overall-percentage">0%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="overall-bar" class="progress-bar" style="width: 0%"></div>
+                </div>
+                <div class="stats-row">
+                    <div class="stat">
+                        <label>Completed</label>
+                        <span id="overall-completed">0</span>
+                    </div>
+                    <div class="stat">
+                        <label>Total Chats</label>
+                        <span id="overall-total">0</span>
+                    </div>
+                </div>
+            </section>
+
+            <div class="dashboard-grid">
+                <section id="active-downloads" class="card">
+                    <h2>Active Downloads</h2>
+                    <div id="downloads-container" class="scroll-list">
+                        <!-- Downloads will be inserted here -->
+                        <div class="empty-state">No active downloads</div>
+                    </div>
+                </section>
+
+                <section id="chat-queue" class="card">
+                    <h2>Chat Queue</h2>
+                    <div id="queue-container" class="scroll-list">
+                        <!-- Queue items will be inserted here -->
+                        <div class="empty-state">Queue is empty</div>
+                    </div>
+                </section>
+            </div>
+        </main>
+
+        <footer>
+            <div class="footer-content">
+                <span>Version 2.0.0</span>
+                <span>ClickHouse Backend Enabled</span>
+            </div>
+        </footer>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
