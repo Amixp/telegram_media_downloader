@@ -304,9 +304,11 @@ class DownloadManager:
         if progress and task_id:
             progress.update(task_id, completed=current, total=total)
         elif progress_bar:
+            # Обновляем total без сброса прогресса, чтобы избежать дёрганья
+            # при небольших изменениях размера файла от Telegram API
             if progress_bar.total != total:
                 progress_bar.total = total
-                progress_bar.reset()
+                # НЕ вызываем reset() - это сбрасывает текущий прогресс
 
             # Defensive check for mock objects in tests
             n = getattr(progress_bar, "n", 0)
@@ -516,6 +518,13 @@ class DownloadManager:
                     desc = self.i18n.t("downloading", file=display_name)
                     logger.info(desc)
 
+                    # Создать отдельный task для каждого файла при использовании rich.Progress
+                    # чтобы избежать конфликтов при параллельной загрузке нескольких файлов
+                    own_task_id = None
+                    if progress:
+                        # Всегда создаём новый task для каждого файла
+                        own_task_id = progress.add_task(desc, total=file_size, visible=True)
+
                     # Проверить, нужно ли пропускать дубликаты
                     skip_duplicates = self.config.get("download_settings", {}).get(
                         "skip_duplicates", True
@@ -580,8 +589,8 @@ class DownloadManager:
 
                             mode = "ab" if current_size > 0 else "wb"
 
-                            if progress and task_id:
-                                progress.update(task_id, description=desc, total=file_size, completed=current_size, visible=True)
+                            if progress and own_task_id is not None:
+                                progress.update(own_task_id, description=desc, total=file_size, completed=current_size, visible=True)
                                 with open(part_file, mode) as f:
                                     async for chunk in client.iter_download(
                                         message.media,
@@ -591,7 +600,7 @@ class DownloadManager:
                                         f.write(chunk)
                                         current_size += len(chunk)
                                         self._progress_callback(
-                                            current_size, file_size, progress=progress, task_id=task_id
+                                            current_size, file_size, progress=progress, task_id=own_task_id
                                         )
                             else:
                                 with tqdm(
@@ -614,13 +623,13 @@ class DownloadManager:
                             download_path = file_name
                         else:
                             # Скачать файл без докачки
-                            if progress and task_id:
-                                progress.update(task_id, description=desc, total=file_size, completed=0, visible=True)
+                            if progress and own_task_id is not None:
+                                progress.update(own_task_id, description=desc, total=file_size, completed=0, visible=True)
                                 download_path = await client.download_media(
                                     message,
                                     file=file_name,
                                     progress_callback=lambda c, t: self._progress_callback(
-                                        c, t, progress=progress, task_id=task_id
+                                        c, t, progress=progress, task_id=own_task_id
                                     ),
                                 )
                             else:
@@ -672,6 +681,10 @@ class DownloadManager:
                         logger.debug("Успешно загружено сообщение %s", message.id)
                         self.downloaded_files[(chat_id, message.id)] = download_path
                         self.downloaded_ids.append((chat_id, message.id))
+
+                        # Скрыть task после завершения загрузки
+                        if progress and own_task_id is not None:
+                            progress.update(own_task_id, visible=False)
                 break
             except FileReferenceExpiredError:
                 logger.warning(
