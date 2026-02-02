@@ -2,6 +2,7 @@ import unittest
 import os
 import shutil
 import zipfile
+import asyncio
 from utils.archive_handler import ArchiveHandler
 
 class TestArchiveHandler(unittest.TestCase):
@@ -15,10 +16,13 @@ class TestArchiveHandler(unittest.TestCase):
             "supported_extensions": ["zip"]
         }
         self.handler = ArchiveHandler(self.settings)
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
 
     def tearDown(self):
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
+        self.loop.close()
 
     def test_extract_zip(self):
         # Create a test zip file
@@ -30,8 +34,8 @@ class TestArchiveHandler(unittest.TestCase):
         with zipfile.ZipFile(zip_path, 'w') as zipf:
             zipf.write(content_path, arcname="content.txt")
 
-        # Extract
-        result = self.handler.extract_if_archive(zip_path)
+        # Extract (используем loop.run_until_complete для async метода)
+        result = self.loop.run_until_complete(self.handler.extract_if_archive(zip_path))
 
         self.assertTrue(result)
         extract_path = os.path.join(self.test_dir, "test")
@@ -44,7 +48,7 @@ class TestArchiveHandler(unittest.TestCase):
         with zipfile.ZipFile(zip_path, 'w') as zipf:
             zipf.writestr("file.txt", "data")
 
-        self.handler.extract_if_archive(zip_path)
+        self.loop.run_until_complete(self.handler.extract_if_archive(zip_path))
         self.assertFalse(os.path.exists(zip_path))
 
     def test_unsupported_format(self):
@@ -52,7 +56,7 @@ class TestArchiveHandler(unittest.TestCase):
         with open(txt_path, "w") as f:
             f.write("not an archive")
 
-        result = self.handler.extract_if_archive(txt_path)
+        result = self.loop.run_until_complete(self.handler.extract_if_archive(txt_path))
         self.assertFalse(result)
 
 if __name__ == "__main__":

@@ -71,3 +71,14 @@ api-telegram.md
 # Reserved directories
 Книги для программистов (reserved)/utils/__init__.py
 tui-debug.log
+
+ch_tables/
+ch_data/
+ch_logs/
+cache/
+.download_cache/
+
+# Coverage reports
+coverage.txt
+clean_coverage.txt
+coverage*.txt
