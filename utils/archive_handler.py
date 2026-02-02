@@ -22,9 +22,10 @@ class ArchiveHandler:
         self.extraction_dir = settings.get("extraction_directory", "")
         self.supported_exts = settings.get("supported_extensions", ["zip", "tar", "gz", "bz2", "xz"])
 
-    def extract_if_archive(self, file_path: str) -> bool:
+    async def extract_if_archive(self, file_path: str) -> bool:
         """
         Проверить, является ли файл архивом и распаковать его, если это так.
+        Выполняется асинхронно в отдельном потоке.
 
         Parameters
         ----------
@@ -48,7 +49,11 @@ class ArchiveHandler:
             os.makedirs(extract_to, exist_ok=True)
 
             logger.info("Распаковка архива %s в %s...", file_path, extract_to)
-            shutil.unpack_archive(file_path, extract_to)
+
+            import asyncio
+            loop = asyncio.get_running_loop()
+            # Выполняем блокирующую распаковку в пуле потоков
+            await loop.run_in_executor(None, lambda: shutil.unpack_archive(file_path, extract_to))
 
             if self.delete_after:
                 logger.debug("Удаление архива %s после распаковки", file_path)

@@ -137,7 +137,8 @@ async def main_async(args: argparse.Namespace):
             server = uvicorn.Server(config)
 
             # Ждем завершения загрузчика или сервера
-            await downloader_task
+            # server.serve() асинхронный и должен быть запущен в текущем цикле
+            await asyncio.gather(downloader_task, server.serve())
         else:
             await downloader_task
 
@@ -151,12 +152,29 @@ def main():
     parser.add_argument("--web", action="store_true", help="Запустить веб-интерфейс дашборда")
     args = parser.parse_args()
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Обработка сигналов для корректного завершения
+    import signal
+    def stop_loop():
+        # Пытаемся корректно остановить задачи
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+        logger.info("Получен сигнал прерывания, завершение работы...")
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_loop)
+        except NotImplementedError:
+            pass
+
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    loop.run_until_complete(main_async(args))
+        loop.run_until_complete(main_async(args))
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":

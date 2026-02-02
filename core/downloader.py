@@ -34,6 +34,7 @@ from utils.archive_handler import ArchiveHandler
 from utils.log import configure_logging
 from utils.media_utils import get_media_type, sanitize_filename
 from utils.validation import validate_archive_file, validate_downloaded_media
+from utils.filter import MediaFilter
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +310,7 @@ class DownloadManager:
 
         # Web Update
         if self.web_app:
+            # Не блокируем цикл ожиданиями обновлений веб-интерфейса
             asyncio.create_task(self.web_app.update_download(task_id or "cli", completed=current, total=total))
 
     def _sanitize_filename(self, filename: str) -> str:
@@ -633,7 +635,13 @@ class DownloadManager:
                         )
                         # Валидировать медиафайл после загрузки (если включено)
                         if validate_downloads:
-                            is_valid = validate_downloaded_media(download_path, message)
+                            # Блокирующая валидация в пуле потоков
+                            loop = asyncio.get_running_loop()
+                            is_valid = await loop.run_in_executor(
+                                None,
+                                lambda: validate_downloaded_media(download_path, message)
+                            )
+
                             if not is_valid:
                                 logger.error(
                                     self.i18n.t("validation_failed_media", id=message.id, path=download_path)
@@ -643,8 +651,8 @@ class DownloadManager:
                                 self.failed_ids.append((chat_id, message.id))
                                 break
 
-                            # Распаковка если это архив
-                            self.archive_handler.extract_if_archive(download_path)
+                            # Распаковка если это архив (теперь async)
+                            await self.archive_handler.extract_if_archive(download_path)
 
                         logger.info(self.i18n.t("downloaded", path=download_path))
                         logger.debug("Успешно загружено сообщение %s", message.id)
