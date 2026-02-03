@@ -132,19 +132,22 @@ class ClickHouseMetadataDB:
         """Вставка сообщений (синхронно для executor)."""
         client = self._get_client()
         query = "INSERT INTO messages (chat_id, message_id, date, text, media_type, file_path, file_size, downloaded, download_date, sender_id, chat_title) VALUES"
+        def _str(v: Any) -> str:
+            return "" if v is None else str(v)
+
         data = [
             (
                 m["chat_id"],
                 m["message_id"],
                 m["date"],
-                m["text"],
-                m["media_type"],
-                m.get("file_path", ""),
+                _str(m.get("text")),
+                _str(m.get("media_type")),
+                _str(m.get("file_path")),
                 m.get("file_size", 0),
                 1 if m.get("file_path") else 0,
                 datetime.now(),
                 m.get("sender_id", 0),
-                m.get("chat_title", "")
+                _str(m.get("chat_title")),
             )
             for m in messages
         ]
@@ -168,7 +171,10 @@ class ClickHouseMetadataDB:
     def _insert_chat(self, chat_id, title, message_count, total_size):
         client = self._get_client()
         query = "INSERT INTO chats (chat_id, title, last_sync, message_count, total_size) VALUES"
-        client.execute(query, [(chat_id, title, datetime.now(), message_count, total_size)])
+        client.execute(
+            query,
+            [(chat_id, "" if title is None else str(title), datetime.now(), message_count, total_size)],
+        )
 
     def close(self):
         """Закрыть соединение."""

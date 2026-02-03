@@ -61,6 +61,47 @@ class TestClickHouseDB(unittest.TestCase):
 
     @mock.patch("utils.clickhouse_db.Client")
     @mock.patch("utils.clickhouse_db.asyncio.get_event_loop")
+    def test_insert_with_none_strings(self, mock_get_loop, mock_client_class):
+        """Сообщения с text/media_type=None не должны вызывать 'NoneType' has no attribute 'encode'."""
+        mock_client = mock_client_class.return_value
+        db = ClickHouseMetadataDB(self.config)
+
+        mock_loop = mock.Mock()
+        mock_get_loop.return_value = mock_loop
+
+        async def run_in_executor(executor, func, *args):
+            func(*args)
+
+        mock_loop.run_in_executor = run_in_executor
+
+        import asyncio
+        loop = asyncio.new_event_loop()
+
+        messages = [
+            {
+                "chat_id": 1,
+                "message_id": 1,
+                "date": datetime.now(),
+                "text": None,
+                "media_type": None,
+                "file_path": None,
+                "chat_title": None,
+            }
+        ]
+        for msg in messages:
+            loop.run_until_complete(db.save_message(msg))
+        loop.run_until_complete(db.flush())
+
+        insert_calls = [c for c in mock_client.execute.call_args_list if "INSERT INTO messages" in c[0][0]]
+        self.assertTrue(len(insert_calls) > 0)
+        row = insert_calls[0][0][1][0]
+        self.assertEqual(row[3], "")  # text
+        self.assertEqual(row[4], "")  # media_type
+        self.assertEqual(row[5], "")  # file_path
+        self.assertEqual(row[10], "")  # chat_title
+
+    @mock.patch("utils.clickhouse_db.Client")
+    @mock.patch("utils.clickhouse_db.asyncio.get_event_loop")
     def test_update_chat_info(self, mock_get_loop, mock_client_class):
         mock_client = mock_client_class.return_value
         db = ClickHouseMetadataDB(self.config)
