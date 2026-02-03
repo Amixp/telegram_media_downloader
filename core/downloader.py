@@ -68,6 +68,8 @@ class DownloadManager:
         self.i18n = get_i18n(self.config.get("language", "ru"))
         self.media_filter = MediaFilter(self.config)
         self.web_app = None # Will be set if web server is running
+        # Кэш последнего description для web progress, чтобы не спамить одним и тем же
+        self._web_last_description: Dict[str, str] = {}
 
         # Настроить логирование
         configure_logging(self.config)
@@ -284,7 +286,16 @@ class DownloadManager:
 
         return None
 
-    def _progress_callback(self, current, total, progress_bar=None, progress=None, task_id=None):
+    def _progress_callback(
+        self,
+        current,
+        total,
+        progress_bar=None,
+        progress=None,
+        task_id=None,
+        web_task_id=None,
+        web_description=None,
+    ):
         """
         Callback для обновления прогресс-бара.
 
@@ -300,6 +311,10 @@ class DownloadManager:
             Экземпляр rich.Progress.
         task_id: Optional[TaskID]
             ID задачи rich.
+        web_task_id: Optional[Any]
+            ID задачи для веб-дашборда (может отличаться от rich task_id).
+        web_description: Optional[str]
+            Короткое описание/имя файла для отображения в веб-дашборде.
         """
         if progress and task_id:
             progress.update(task_id, completed=current, total=total)
@@ -319,7 +334,23 @@ class DownloadManager:
         # Web Update
         if self.web_app:
             # Не блокируем цикл ожиданиями обновлений веб-интерфейса
-            asyncio.create_task(self.web_app.update_download(task_id or "cli", completed=current, total=total))
+            tid = web_task_id if web_task_id is not None else (task_id if task_id is not None else "cli")
+            tid_str = str(tid)
+            desc_to_send = None
+            if web_description is not None:
+                prev = self._web_last_description.get(tid_str)
+                if prev != web_description:
+                    self._web_last_description[tid_str] = web_description
+                    desc_to_send = web_description
+
+            asyncio.create_task(
+                self.web_app.update_download(
+                    tid,
+                    description=desc_to_send,
+                    completed=current,
+                    total=total,
+                )
+            )
 
     def _sanitize_filename(self, filename: str) -> str:
         """
@@ -518,12 +549,8 @@ class DownloadManager:
                     desc = self.i18n.t("downloading", file=display_name)
                     logger.info(desc)
 
-                    # Создать отдельный task для каждого файла при использовании rich.Progress
-                    # чтобы избежать конфликтов при параллельной загрузке нескольких файлов
+                    # own_task_id будет создан непосредственно перед началом загрузки
                     own_task_id = None
-                    if progress:
-                        # Всегда создаём новый task для каждого файла
-                        own_task_id = progress.add_task(desc, total=file_size, visible=True)
 
                     # Проверить, нужно ли пропускать дубликаты
                     skip_duplicates = self.config.get("download_settings", {}).get(
@@ -537,6 +564,10 @@ class DownloadManager:
                     if chat_id == 0:
                         # Fallback: если chat_id не установлен в конфиге, использовать из сообщения
                         chat_id = message.chat.id if message.chat else 0
+
+                    # Для веб-дашборда хотим стабильный task_id и короткое описание (имя файла)
+                    web_task_id = f"{chat_id}_{message.id}"
+                    web_description = str(display_name)
 
                     # Умный skip ДО скачивания: проверяем существующий файл
                     # Сначала по пути, затем в архиве по имени и размеру
@@ -589,8 +620,21 @@ class DownloadManager:
 
                             mode = "ab" if current_size > 0 else "wb"
 
+                            # Создать task непосредственно перед началом загрузки
+                            if progress and own_task_id is None:
+                                own_task_id = progress.add_task(desc, total=file_size, completed=current_size, visible=True)
+
                             if progress and own_task_id is not None:
                                 progress.update(own_task_id, description=desc, total=file_size, completed=current_size, visible=True)
+                                # Сразу показать текущий файл в веб-дашборде (даже если current_size=0)
+                                self._progress_callback(
+                                    current_size,
+                                    file_size,
+                                    progress=progress,
+                                    task_id=own_task_id,
+                                    web_task_id=web_task_id,
+                                    web_description=web_description,
+                                )
                                 with open(part_file, mode) as f:
                                     async for chunk in client.iter_download(
                                         message.media,
@@ -600,12 +644,25 @@ class DownloadManager:
                                         f.write(chunk)
                                         current_size += len(chunk)
                                         self._progress_callback(
-                                            current_size, file_size, progress=progress, task_id=own_task_id
+                                            current_size,
+                                            file_size,
+                                            progress=progress,
+                                            task_id=own_task_id,
+                                            web_task_id=web_task_id,
+                                            web_description=web_description,
                                         )
                             else:
                                 with tqdm(
                                     total=file_size, unit="B", unit_scale=True, desc=desc, initial=current_size
                                 ) as pbar:
+                                    # Сразу показать текущий файл в веб-дашборде (даже если current_size=0)
+                                    self._progress_callback(
+                                        current_size,
+                                        file_size,
+                                        progress_bar=pbar,
+                                        web_task_id=web_task_id,
+                                        web_description=web_description,
+                                    )
                                     with open(part_file, mode) as f:
                                         async for chunk in client.iter_download(
                                             message.media,
@@ -615,21 +672,54 @@ class DownloadManager:
                                             f.write(chunk)
                                             current_size += len(chunk)
                                             self._progress_callback(
-                                                current_size, file_size, progress_bar=pbar
+                                                current_size,
+                                                file_size,
+                                                progress_bar=pbar,
+                                                web_task_id=web_task_id,
+                                                web_description=web_description,
                                             )
 
                             # Переименовать после успешной загрузки
                             shutil.move(part_file, file_name)
                             download_path = file_name
+                            # Telethon/iter_download может не дать последнего тика ровно в total — добиваем явно
+                            final_total = file_size if file_size > 0 else current_size
+                            if final_total > 0:
+                                self._progress_callback(
+                                    final_total,
+                                    final_total,
+                                    progress=progress if (progress and own_task_id is not None) else None,
+                                    task_id=own_task_id,
+                                    web_task_id=web_task_id,
+                                    web_description=web_description,
+                                )
                         else:
                             # Скачать файл без докачки
+                            # Создать task непосредственно перед началом загрузки
+                            if progress and own_task_id is None:
+                                own_task_id = progress.add_task(desc, total=file_size, completed=0, visible=True)
+
                             if progress and own_task_id is not None:
                                 progress.update(own_task_id, description=desc, total=file_size, completed=0, visible=True)
+                                # Сразу показать текущий файл в веб-дашборде
+                                self._progress_callback(
+                                    0,
+                                    file_size,
+                                    progress=progress,
+                                    task_id=own_task_id,
+                                    web_task_id=web_task_id,
+                                    web_description=web_description,
+                                )
                                 download_path = await client.download_media(
                                     message,
                                     file=file_name,
                                     progress_callback=lambda c, t: self._progress_callback(
-                                        c, t, progress=progress, task_id=own_task_id
+                                        c,
+                                        t,
+                                        progress=progress,
+                                        task_id=own_task_id,
+                                        web_task_id=web_task_id,
+                                        web_description=web_description,
                                     ),
                                 )
                             else:
@@ -637,13 +727,41 @@ class DownloadManager:
                                     total=file_size, unit="B", unit_scale=True, desc=desc
                                 ) as pbar:
                                     # pylint: disable=cell-var-from-loop
+                                    # Сразу показать текущий файл в веб-дашборде
+                                    self._progress_callback(
+                                        0,
+                                        file_size,
+                                        progress_bar=pbar,
+                                        web_task_id=web_task_id,
+                                        web_description=web_description,
+                                    )
                                     download_path = await client.download_media(
                                         message,
                                         file=file_name,
                                         progress_callback=lambda c, t: self._progress_callback(
-                                            c, t, progress_bar=pbar
+                                            c,
+                                            t,
+                                            progress_bar=pbar,
+                                            web_task_id=web_task_id,
+                                            web_description=web_description,
                                         ),
                                     )
+
+                    # Telethon не всегда вызывает callback на 100% — добиваем явно при успешной загрузке
+                    if download_path:
+                        try:
+                            final_total = file_size if file_size > 0 else os.path.getsize(download_path)
+                        except Exception:
+                            final_total = file_size
+                        if final_total and final_total > 0:
+                            self._progress_callback(
+                                final_total,
+                                final_total,
+                                progress=progress if (progress and own_task_id is not None) else None,
+                                task_id=own_task_id,
+                                web_task_id=web_task_id,
+                                web_description=web_description,
+                            )
 
                     # Всегда проверять дубликаты после загрузки (если включено)
                     if download_path and skip_duplicates:
@@ -1147,13 +1265,7 @@ class DownloadManager:
                     # Web Update
                     if self.web_app:
                         import web.app as web_app
-                        # Assuming 'chats_done' is available in this scope, otherwise it needs to be defined.
-                        # For now, using a placeholder or assuming it's meant for the outer loop.
-                        # If this is inside begin_import_chat, chats_done is not directly available here.
-                        # This part of the snippet seems to be misplaced or requires context from begin_import_all_chats.
-                        # For faithful insertion, I'll put it as is, but note the potential issue.
-                        # await web_app.update_overall(completed=chats_done)
-                        await web_app.update_chat(chat_id, status="Processing batch") # Changed to reflect batch processing
+                        await web_app.update_chat(chat_id, status="Processing")
 
                     # Проверка max_messages только для текущего чата
                     chat_downloaded_count = sum(
@@ -1231,6 +1343,7 @@ class DownloadManager:
                 import web.app as web_app
                 await web_app.update_overall(total=len(queue_entries), completed=0, status="Processing")
 
+            chats_done = 0
             for c in queue_entries:
                 chat_id = c["chat_id"]
                 chat_title = c.get("title", "")
@@ -1251,15 +1364,28 @@ class DownloadManager:
                 self.config["chat_id"] = chat_id
 
                 try:
+                    if self.web_app:
+                        import web.app as web_app
+                        await web_app.update_chat(chat_id, title=chat_title or str(chat_id), status="Processing")
+                        await web_app.update_overall(completed=chats_done, status=f"Processing: {chat_title or chat_id}")
+
                     await self.begin_import_chat(
                         client, chat_id, chat_title, pagination_limit,
                         progress=progress, task_id=chat_task
                     )
                 except Exception as e:
                     logger.error(f"Ошибка при обработке чата {chat_title or chat_id}: {e}", exc_info=True)
+                    if self.web_app:
+                        import web.app as web_app
+                        await web_app.update_chat(chat_id, title=chat_title or str(chat_id), status="Error")
                 finally:
                     progress.update(chat_task, visible=False)
                     progress.advance(overall_task)
+                    chats_done += 1
+                    if self.web_app:
+                        import web.app as web_app
+                        await web_app.update_chat(chat_id, title=chat_title or str(chat_id), status="Done")
+                        await web_app.update_overall(completed=chats_done, status="Processing")
 
             if self.failed_ids:
                 logger.info(
@@ -1270,6 +1396,9 @@ class DownloadManager:
 
             # Финальный сброс буферов ClickHouse
             await self.flush()
+            if self.web_app:
+                import web.app as web_app
+                await web_app.update_overall(status="Done")
 
     async def flush(self):
         """Принудительно записывает все буферы (ClickHouse и др.) в БД."""

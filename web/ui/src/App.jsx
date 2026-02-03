@@ -27,13 +27,18 @@ const Dashboard = () => {
     active_downloads: {}
   });
   const [stats, setStats] = useState({ enabled: false, chats: [], history: [] });
+  const [statsUpdatedAt, setStatsUpdatedAt] = useState(null);
   const [connected, setConnected] = useState(false);
   const ws = useRef(null);
 
   useEffect(() => {
     connectWS();
     fetchStats();
-    return () => ws.current?.close();
+    const interval = setInterval(fetchStats, 10_000);
+    return () => {
+      clearInterval(interval);
+      ws.current?.close();
+    };
   }, []);
 
   const connectWS = () => {
@@ -56,14 +61,43 @@ const Dashboard = () => {
       const res = await fetch('/api/stats');
       const data = await res.json();
       setStats(data);
+      setStatsUpdatedAt(new Date());
     } catch (e) {
       console.error("Failed to fetch stats", e);
+      setStats({ enabled: true, connected: false, error: String(e), chats: [], history: [] });
+      setStatsUpdatedAt(new Date());
     }
   };
 
   const overallPercentage = progress.overall.total > 0
     ? Math.round((progress.overall.completed / progress.overall.total) * 100)
     : 0;
+
+  const etaSeconds = progress?.overall?.eta_seconds ?? null;
+  const formatEta = (seconds) => {
+    if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return null;
+    const s = Math.floor(seconds);
+    const hh = Math.floor(s / 3600);
+    const mm = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    return `${hh.toString().padStart(2, '0')}:${mm.toString().padStart(2, '0')}:${ss.toString().padStart(2, '0')}`;
+  };
+  const etaText = formatEta(etaSeconds);
+
+  const clickhouseState = (() => {
+    if (stats?.enabled === false) return { kind: 'off', label: 'CLICKHOUSE OFF', detail: stats?.error };
+    if (stats?.connected === false || stats?.error) return { kind: 'err', label: 'CLICKHOUSE ERROR', detail: stats?.error };
+    return { kind: 'ok', label: 'CLICKHOUSE OK', detail: null };
+  })();
+
+  const activeEntries = Object.entries(progress.active_downloads || {}).filter(([, dl]) => {
+    // страховка: если бэк не успел удалить завершённое — не показываем 100%
+    if (!dl) return false;
+    const t = Number(dl.total || 0);
+    const c = Number(dl.completed || 0);
+    if (t > 0 && c >= t) return false;
+    return true;
+  });
 
   return (
     <div className="app-container p-4 md:p-8 max-w-7xl mx-auto space-y-8">
@@ -74,14 +108,29 @@ const Dashboard = () => {
             TMD Dashboard
           </h1>
           <p className="text-sm text-slate-400 mt-1 flex items-center gap-2">
-            <Database size={14} /> ClickHouse Engine Active
+            <Database size={14} /> Web Dashboard
           </p>
         </div>
-        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-medium ${
-          connected ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
-        }`}>
-          <div className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-          {connected ? 'CONNECTED' : 'DISCONNECTED'}
+        <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-medium ${
+            clickhouseState.kind === 'ok'
+              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+              : clickhouseState.kind === 'off'
+                ? 'bg-slate-500/10 border-slate-500/20 text-slate-300'
+                : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+          }`} title={clickhouseState.detail || ''}>
+            <div className={`w-2 h-2 rounded-full ${
+              clickhouseState.kind === 'ok' ? 'bg-emerald-400' : clickhouseState.kind === 'off' ? 'bg-slate-400' : 'bg-rose-400'
+            }`} />
+            {clickhouseState.label}
+          </div>
+
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-medium ${
+            connected ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+          }`}>
+            <div className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+            {connected ? 'WS CONNECTED' : 'WS DISCONNECTED'}
+          </div>
         </div>
       </header>
 
@@ -124,7 +173,7 @@ const Dashboard = () => {
             </div>
             <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-600/30">
               <p className="text-xs text-slate-300 uppercase tracking-wider font-bold mb-2">Time Left</p>
-              <p className="text-2xl font-bold text-white">Calculating...</p>
+              <p className="text-2xl font-bold text-white">{etaText || '---'}</p>
             </div>
           </div>
         </div>
@@ -139,12 +188,12 @@ const Dashboard = () => {
             <h3 className="card-title text-white"><Activity size={18} className="text-blue-400" /> Active Threads</h3>
             <div className="space-y-4 mt-4">
               <AnimatePresence>
-                {Object.entries(progress.active_downloads).length === 0 ? (
+                {activeEntries.length === 0 ? (
                   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 text-slate-400 bg-slate-900/20 rounded-xl border border-dashed border-slate-700">
                     <p>No active media downloads</p>
                   </motion.div>
                 ) : (
-                  Object.entries(progress.active_downloads).map(([id, dl]) => {
+                  activeEntries.map(([id, dl]) => {
                     const pct = dl.total > 0 ? Math.round((dl.completed / dl.total) * 100) : 0;
                     return (
                       <motion.div
@@ -206,7 +255,24 @@ const Dashboard = () => {
           <section className="glass-card p-6 h-full flex flex-col">
             <h3 className="card-title text-white"><Search size={18} className="text-emerald-400" /> Chat Statistics</h3>
             <div className="flex-1 overflow-y-auto mt-4 space-y-3 pr-2 scroll-list">
-               {stats.chats.map((chat, idx) => (
+               {stats?.enabled === false && (
+                 <div className="text-center py-8 text-slate-300">
+                   <p className="font-semibold">ClickHouse выключен</p>
+                   <p className="text-xs text-slate-400 mt-2">{stats?.error || 'Включи clickhouse.enabled в config.yaml'}</p>
+                 </div>
+               )}
+
+               {stats?.enabled !== false && (stats?.connected === false || stats?.error) && (
+                 <div className="text-center py-8 text-rose-300">
+                   <p className="font-semibold">ClickHouse недоступен</p>
+                   <p className="text-xs text-rose-200/80 mt-2 break-words">{stats?.error || 'Ошибка подключения/запроса'}</p>
+                   {stats?.error_type === 'schema_missing' && (
+                     <p className="text-xs text-slate-300 mt-3">Похоже, нет таблиц/схемы (или миграции/инициализация не запускались).</p>
+                   )}
+                 </div>
+               )}
+
+               {stats?.enabled !== false && stats?.connected !== false && !stats?.error && (stats?.chats?.length || 0) > 0 && stats.chats.map((chat, idx) => (
                  <div key={idx} className="bg-slate-900/40 p-3 rounded-lg border border-slate-600/30 flex items-center justify-between hover:bg-slate-800/50 transition-colors cursor-default">
                     <div>
                       <p className="text-sm font-bold text-white">{chat.title}</p>
@@ -215,8 +281,16 @@ const Dashboard = () => {
                     <ChevronRight size={14} className="text-slate-500" />
                  </div>
                ))}
-               {stats.chats.length === 0 && (
-                 <p className="text-center py-8 text-slate-400 italic">No historical data found</p>
+               {stats?.enabled !== false && stats?.connected !== false && !stats?.error && (stats?.chats?.length || 0) === 0 && (
+                 <div className="text-center py-8 text-slate-300 italic">
+                   <p>Данных пока нет</p>
+                   <p className="text-xs text-slate-400 mt-2">
+                     Таблицы пустые или данные ещё не успели записаться в ClickHouse.
+                   </p>
+                 </div>
+               )}
+               {statsUpdatedAt && (
+                 <p className="text-center text-[10px] text-slate-500 mt-4">Обновлено: {statsUpdatedAt.toLocaleTimeString()}</p>
                )}
             </div>
           </section>
