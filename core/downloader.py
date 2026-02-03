@@ -1021,7 +1021,15 @@ class DownloadManager:
 
     def update_config(self, chat_id: Optional[int] = None) -> None:
         """
-        Обновить конфигурацию.
+        Обновить конфигурацию (last_read_message_id, ids_to_retry для чата).
+
+        Причины роста ids_to_retry (очередь повторов):
+        - Нестабильное соединение: wrong session ID, обрывы, ConnectionError → сообщения
+          попадают в failed_ids и в ids_to_retry.
+        - Истёкшая file reference (FileReferenceExpiredError) при долгих загрузках.
+        - Таймауты, FloodWait, миграция DC (FileMigrateError).
+        - Один и тот же id при повторных сбоях добавлялся бы многократно — делаем
+          дедупликацию и ограничение max_ids_to_retry.
 
         Parameters
         ----------
@@ -1047,8 +1055,11 @@ class DownloadManager:
         chat_downloaded_ids = [msg_id for (cid, msg_id) in self.downloaded_ids if cid == chat_id]
         chat_failed_ids = [msg_id for (cid, msg_id) in self.failed_ids if cid == chat_id]
 
-        # Обновить ids_to_retry: убрать успешно загруженные, добавить неудачные
-        ids_to_retry = list(set(current_ids_to_retry) - set(chat_downloaded_ids)) + chat_failed_ids
+        # Обновить ids_to_retry: убрать успешно загруженные, добавить неудачные.
+        # Дедупликация (dict.fromkeys) — иначе одно и то же сообщение при повторных сбоях
+        # добавляется каждый запуск и очередь растёт без ограничения.
+        remaining = list(set(current_ids_to_retry) - set(chat_downloaded_ids))
+        ids_to_retry = list(dict.fromkeys(remaining + chat_failed_ids))
 
         # Ограничить размер очереди повторов, чтобы при нестабильной сети не раздувать партию
         max_ids_to_retry = self.config.get("download_settings", {}).get("max_ids_to_retry", 500)
@@ -1057,6 +1068,15 @@ class DownloadManager:
             logger.warning(
                 "ids_to_retry обрезан до %s записей (max_ids_to_retry). Старые будут пропущены.",
                 max_ids_to_retry,
+            )
+
+        if len(ids_to_retry) > 200:
+            logger.warning(
+                "Большая очередь повторов для chat_id=%s: %s. Возможные причины: "
+                "нестабильное соединение (wrong session ID, обрывы), истёкшие file reference, "
+                "лимиты Telegram; уменьшите max_parallel_downloads или max_ids_to_retry.",
+                chat_id,
+                len(ids_to_retry),
             )
 
         # Обновить состояние чата
