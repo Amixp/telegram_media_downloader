@@ -20,6 +20,9 @@ import {
 // Глобальные стили для графиков
 const chartColors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'];
 
+// Скользящее среднее для скорости и ETA (окно последних N значений)
+const SMOOTH_WINDOW = 12;
+
 const Dashboard = () => {
   const [progress, setProgress] = useState({
     overall: { total: 0, completed: 0, status: "Idle", speed: 0 },
@@ -30,6 +33,8 @@ const Dashboard = () => {
   const [statsUpdatedAt, setStatsUpdatedAt] = useState(null);
   const [connected, setConnected] = useState(false);
   const ws = useRef(null);
+  const speedBuffer = useRef([]);
+  const etaBuffer = useRef([]);
 
   useEffect(() => {
     connectWS();
@@ -52,7 +57,36 @@ const Dashboard = () => {
       setTimeout(connectWS, 3000);
     };
     ws.current.onmessage = (event) => {
-      setProgress(JSON.parse(event.data));
+      const data = JSON.parse(event.data);
+      const rawSpeed = data?.overall?.speed;
+      const rawEta = data?.overall?.eta_seconds;
+
+      if (typeof rawSpeed === 'number' && rawSpeed >= 0) {
+        speedBuffer.current = [...speedBuffer.current, rawSpeed].slice(-SMOOTH_WINDOW);
+      }
+      if (typeof rawEta === 'number' && rawEta >= 0) {
+        etaBuffer.current = [...etaBuffer.current, rawEta].slice(-SMOOTH_WINDOW);
+      }
+      if (Object.keys(data?.active_downloads || {}).length === 0) {
+        speedBuffer.current = [];
+        etaBuffer.current = [];
+      }
+
+      const avgSpeed = speedBuffer.current.length > 0
+        ? speedBuffer.current.reduce((a, b) => a + b, 0) / speedBuffer.current.length
+        : rawSpeed;
+      const avgEta = etaBuffer.current.length > 0
+        ? Math.round(etaBuffer.current.reduce((a, b) => a + b, 0) / etaBuffer.current.length)
+        : rawEta;
+
+      setProgress({
+        ...data,
+        overall: {
+          ...data.overall,
+          speed: typeof avgSpeed === 'number' ? Math.round(avgSpeed * 100) / 100 : data.overall?.speed,
+          eta_seconds: typeof avgEta === 'number' ? avgEta : data.overall?.eta_seconds
+        }
+      });
     };
   };
 
