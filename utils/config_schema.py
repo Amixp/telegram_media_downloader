@@ -10,6 +10,8 @@ class ArchiveSettings(BaseModel):
 class DownloadSettings(BaseModel):
     max_parallel_downloads: Optional[int] = 5
     pagination_limit: int = 100
+    # Максимум id в очереди повторов (ids_to_retry); при превышении старые обрезаются
+    max_ids_to_retry: Optional[int] = 500
     base_directory: str = ""
     skip_duplicates: bool = True
     download_message_history: bool = False

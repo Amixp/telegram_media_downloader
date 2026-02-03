@@ -1050,6 +1050,15 @@ class DownloadManager:
         # Обновить ids_to_retry: убрать успешно загруженные, добавить неудачные
         ids_to_retry = list(set(current_ids_to_retry) - set(chat_downloaded_ids)) + chat_failed_ids
 
+        # Ограничить размер очереди повторов, чтобы при нестабильной сети не раздувать партию
+        max_ids_to_retry = self.config.get("download_settings", {}).get("max_ids_to_retry", 500)
+        if isinstance(max_ids_to_retry, int) and max_ids_to_retry > 0 and len(ids_to_retry) > max_ids_to_retry:
+            ids_to_retry = ids_to_retry[-max_ids_to_retry:]
+            logger.warning(
+                "ids_to_retry обрезан до %s записей (max_ids_to_retry). Старые будут пропущены.",
+                max_ids_to_retry,
+            )
+
         # Обновить состояние чата
         self.config_manager.update_chat_state(
             chat_id, config.get("last_read_message_id", 0), ids_to_retry
@@ -1233,14 +1242,43 @@ class DownloadManager:
             return
         messages_list: list = []
         pagination_count: int = 0
+
+        # Обрабатывать ids_to_retry партиями по pagination_limit, чтобы не создавать одну огромную партию
         if ids_to_retry:
             logger.info(self.i18n.t("retrying"))
             skipped_messages: list = await client.get_messages(  # type: ignore
                 chat_id, ids=ids_to_retry
             )
-            for message in skipped_messages:
-                pagination_count += 1
-                messages_list.append(message)
+            for chunk_start in range(0, len(skipped_messages), pagination_limit):
+                batch = skipped_messages[chunk_start : chunk_start + pagination_limit]
+                last_read_message_id = await self.process_messages(
+                    client,
+                    batch,
+                    media_types,
+                    self.config.get("file_formats", {}),
+                    download_directory,
+                    semaphore,
+                    progress=progress,
+                    task_id=task_id,
+                )
+                if self.web_app:
+                    import web.app as web_app
+                    await web_app.update_chat(chat_id, status="Processing")
+                self.config["last_read_message_id"] = last_read_message_id
+                self.update_config(chat_id)
+                chat_downloaded_count = sum(
+                    1 for (cid, _) in self.downloaded_ids if cid == chat_id
+                )
+                if max_messages and chat_downloaded_count >= max_messages:
+                    # Достигнут лимит — выходим, остаток ids_to_retry останется в конфиге
+                    self.config["last_read_message_id"] = last_read_message_id
+                    self.update_config(chat_id)
+                    keys_to_remove = [k for k in self.downloaded_files if k[0] == chat_id]
+                    for k in keys_to_remove:
+                        del self.downloaded_files[k]
+                    self.downloaded_ids = [(c, m) for (c, m) in self.downloaded_ids if c != chat_id]
+                    self.failed_ids = [(c, m) for (c, m) in self.failed_ids if c != chat_id]
+                    return
 
         try:
             async for message in messages_iter:  # type: ignore
