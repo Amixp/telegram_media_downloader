@@ -3,7 +3,7 @@ import json
 import logging
 import time
 from typing import Dict, List, Any
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -174,8 +174,10 @@ async def get_stats():
     client = db._get_client()
 
     try:
-        # Статика по чатам
-        chats_data = client.execute("SELECT title, message_count, total_size FROM chats ORDER BY message_count DESC")
+        # Статика по чатам (с chat_id для перехода к просмотру)
+        chats_data = client.execute(
+            "SELECT chat_id, title, message_count, total_size FROM chats FINAL ORDER BY message_count DESC"
+        )
         # Статистика по дням (последние 30 дней)
         history_data = client.execute("""
             SELECT toDate(date) as d, count() as c
@@ -187,7 +189,7 @@ async def get_stats():
         return {
             "enabled": True,
             "connected": True,
-            "chats": [{"title": r[0], "count": r[1], "size": r[2]} for r in chats_data],
+            "chats": [{"chat_id": r[0], "title": r[1], "count": r[2], "size": r[3]} for r in chats_data],
             "history": [{"date": str(r[0]), "count": r[1]} for r in history_data]
         }
     except Exception as e:
@@ -199,6 +201,26 @@ async def get_stats():
         elif "connect" in lower or "connection refused" in lower or "timed out" in lower:
             error_type = "connection"
         return {"enabled": True, "connected": False, "error": msg, "error_type": error_type, "chats": [], "history": []}
+
+
+@app.get("/api/chat/{chat_id}/messages")
+async def get_chat_messages(
+    chat_id: int,
+    offset: int = Query(0, ge=0, le=10_000_000),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Пагинированная выдача сообщений чата (динамическая загрузка)."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        return {"messages": [], "total": 0}
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    messages, total = db.get_messages_page(chat_id, offset=offset, limit=limit)
+    return {"messages": messages, "total": total}
+
 
 @app.websocket("/ws/progress")
 async def websocket_endpoint(websocket: WebSocket):

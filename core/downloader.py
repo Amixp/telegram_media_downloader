@@ -81,7 +81,15 @@ class DownloadManager:
             base_dir = download_settings.get("base_directory") or PROJECT_ROOT
             history_format = download_settings.get("history_format", "json")
             history_dir = download_settings.get("history_directory", "history")
-            self.history_manager = MessageHistory(base_dir, history_format, history_dir, config_manager)
+            ch_cfg = self.config.get("clickhouse", {})
+            self.history_manager = MessageHistory(
+                base_dir,
+                history_format,
+                history_dir,
+                config_manager,
+                clickhouse_db=self.clickhouse_db,
+                clickhouse_primary_source=ch_cfg.get("primary_source", False),
+            )
 
     def _can_download(
         self,
@@ -881,12 +889,28 @@ class DownloadManager:
                     self.i18n.t("download_exception", id=message.id, error=str(e)),
                     exc_info=True,
                 )
-                # Использовать chat_id из конфига для консистентности
                 chat_id = self.config.get("chat_id", 0)
                 if chat_id == 0:
                     chat_id = message.chat.id if message.chat else 0
-                self.failed_ids.append((chat_id, message.id))
-                break
+                # При неизвестной ошибке — обновить сообщение (refetch) и повторить;
+                # в клиенте файл часто грузится, т.к. там актуальная file reference.
+                if retry < 2:
+                    logger.warning(
+                        self.i18n.t("download_exception_refetch", id=message.id)
+                    )
+                    try:
+                        refetched = await client.get_messages(
+                            message.chat.id if message.chat else chat_id,
+                            ids=message.id,
+                        )
+                        if refetched:
+                            message = refetched[0]
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2)
+                else:
+                    self.failed_ids.append((chat_id, message.id))
+                    break
         return message.id
 
     async def process_messages(
@@ -1460,10 +1484,10 @@ class DownloadManager:
 
     async def flush(self):
         """Принудительно записывает все буферы (ClickHouse и др.) в БД."""
-        if self.clickhouse:
-            await self.clickhouse.flush()
+        if self.clickhouse_db:
+            await self.clickhouse_db.flush()
 
     def close(self):
         """Закрывает все открытые ресурсы (соединения БД и др.)."""
-        if self.clickhouse:
-            self.clickhouse.close()
+        if self.clickhouse_db:
+            self.clickhouse_db.close()

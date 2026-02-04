@@ -123,5 +123,107 @@ class TestClickHouseDB(unittest.TestCase):
         self.assertEqual(chat_calls[0][0][1][0][0], 123)
         self.assertEqual(chat_calls[0][0][1][0][1], "Test Chat")
 
+    @mock.patch("utils.clickhouse_db.Client")
+    def test_get_existing_message_ids(self, mock_client_class):
+        """get_existing_message_ids возвращает множество message_id из БД."""
+        mock_client = mock_client_class.return_value
+        mock_client.execute.return_value = [(10,), (11,)]
+        db = ClickHouseMetadataDB(self.config)
+        result = db.get_existing_message_ids(chat_id=1, message_ids=[10, 11, 12])
+        self.assertEqual(result, {10, 11})
+        select_calls = [c for c in mock_client.execute.call_args_list if "SELECT message_id" in c[0][0]]
+        self.assertEqual(len(select_calls), 1)
+        self.assertIn("chat_id", select_calls[0][0][0])
+
+    @mock.patch("utils.clickhouse_db.Client")
+    def test_get_existing_message_ids_disabled(self, mock_client_class):
+        """При enabled=False get_existing_message_ids возвращает пустое множество."""
+        db = ClickHouseMetadataDB({"enabled": False})
+        result = db.get_existing_message_ids(chat_id=1, message_ids=[10])
+        self.assertEqual(result, set())
+        mock_client_class.assert_not_called()
+
+    @mock.patch("utils.clickhouse_db.Client")
+    def test_get_messages_for_chat(self, mock_client_class):
+        """get_messages_for_chat возвращает список dict в формате JSONL."""
+        from datetime import datetime
+        dt = datetime(2025, 1, 15, 12, 0, 0)
+        mock_client = mock_client_class.return_value
+        mock_client.execute.return_value = [
+            (1, 10, dt, "Hi", "text", "", 0, 0, "Chat"),
+            (1, 11, dt, "Bye", "photo", "/path/photo.jpg", 1024, 999, "Chat"),
+        ]
+        db = ClickHouseMetadataDB(self.config)
+        result = db.get_messages_for_chat(chat_id=1)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["id"], 10)
+        self.assertEqual(result[0]["text"], "Hi")
+        self.assertEqual(result[0]["downloaded_file"], None)
+        self.assertEqual(result[1]["id"], 11)
+        self.assertEqual(result[1]["downloaded_file"], "/path/photo.jpg")
+        self.assertEqual(result[1]["has_media"], True)
+
+    @mock.patch("utils.clickhouse_db.Client")
+    def test_get_chats_manifest(self, mock_client_class):
+        """get_chats_manifest возвращает список (chat_id, title, count, last_date)."""
+        from datetime import datetime
+        dt = datetime(2025, 1, 15)
+        mock_client = mock_client_class.return_value
+        mock_client.execute.return_value = [(1, "Chat One", 100, dt), (-2, "Chat Two", 50, dt)]
+        db = ClickHouseMetadataDB(self.config)
+        result = db.get_chats_manifest()
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], (1, "Chat One", 100, dt))
+        self.assertEqual(result[1][0], -2)
+        self.assertEqual(result[1][2], 50)
+
+    @mock.patch("utils.clickhouse_db.Client")
+    def test_get_chat_meta(self, mock_client_class):
+        """get_chat_meta возвращает (title, message_count, last_message_date) или None."""
+        from datetime import datetime
+        dt = datetime(2025, 1, 15)
+        mock_client = mock_client_class.return_value
+        mock_client.execute.return_value = [("My Chat", 42, dt)]
+        db = ClickHouseMetadataDB(self.config)
+        result = db.get_chat_meta(chat_id=1)
+        self.assertIsNotNone(result)
+        title, count, last_date = result
+        self.assertEqual(title, "My Chat")
+        self.assertEqual(count, 42)
+        self.assertEqual(last_date, dt)
+
+    @mock.patch("utils.clickhouse_db.Client")
+    def test_get_chat_meta_empty(self, mock_client_class):
+        """get_chat_meta возвращает None при отсутствии сообщений."""
+        mock_client = mock_client_class.return_value
+        mock_client.execute.return_value = []
+        db = ClickHouseMetadataDB(self.config)
+        result = db.get_chat_meta(chat_id=999)
+        self.assertIsNone(result)
+
+    @mock.patch("utils.clickhouse_db.Client")
+    def test_get_messages_page(self, mock_client_class):
+        """get_messages_page возвращает (messages, total) с пагинацией."""
+        from datetime import datetime
+        dt = datetime(2025, 1, 15, 12, 0, 0)
+        mock_client = mock_client_class.return_value
+
+        def execute_side_effect(query, params=None):
+            if "count()" in query:
+                return [(250,)]
+            return [
+                (1, 10, dt, "Hi", "text", "", 0, 0, "Chat"),
+                (1, 11, dt, "Bye", "photo", "/path/photo.jpg", 1024, 999, "Chat"),
+            ]
+
+        mock_client.execute.side_effect = execute_side_effect
+        db = ClickHouseMetadataDB(self.config)
+        messages, total = db.get_messages_page(chat_id=1, offset=0, limit=100)
+        self.assertEqual(total, 250)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["id"], 10)
+        self.assertEqual(messages[1]["has_media"], True)
+
+
 if __name__ == "__main__":
     unittest.main()

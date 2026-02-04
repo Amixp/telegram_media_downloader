@@ -1,13 +1,16 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import {
     Activity,
+    ChevronLeft,
     ChevronRight,
     Database,
     History,
+    Image,
     Search,
     Zap
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import {
     Area,
     AreaChart,
@@ -23,6 +26,210 @@ const chartColors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444'];
 // Скользящее среднее для скорости и ETA (окно последних N значений)
 const SMOOTH_WINDOW = 12;
 
+const PAGE_SIZE = 100;
+const MAX_IN_MEMORY = 500;
+
+const ChatViewer = ({ chatId, title, onClose }) => {
+  const [items, setItems] = useState([]);
+  const [startOffset, setStartOffset] = useState(0);
+  const [firstItemIndex, setFirstItemIndex] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [loadingTop, setLoadingTop] = useState(false);
+  const [loadingBottom, setLoadingBottom] = useState(false);
+  const loadingRef = useRef(false);
+
+  const fetchPage = useCallback(async (offset, limit = PAGE_SIZE) => {
+    const res = await fetch(`/api/chat/${chatId}/messages?offset=${offset}&limit=${limit}`);
+    const data = await res.json();
+    return data;
+  }, [chatId]);
+
+  const loadInitial = useCallback(async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoading(true);
+    try {
+      const { messages, total: t } = await fetchPage(0);
+      setItems(messages || []);
+      setStartOffset(0);
+      setFirstItemIndex(0);
+      setTotal(t || 0);
+    } finally {
+      setLoading(false);
+      loadingRef.current = false;
+    }
+  }, [fetchPage]);
+
+  useEffect(() => {
+    loadInitial();
+  }, [chatId, loadInitial]);
+
+  const loadMoreTop = useCallback(async () => {
+    if (startOffset <= 0 || loadingRef.current) return;
+    loadingRef.current = true;
+    setLoadingTop(true);
+    try {
+      const off = Math.max(0, startOffset - PAGE_SIZE);
+      const { messages } = await fetchPage(off);
+      if (!messages?.length) return;
+      const newItems = [...messages, ...items];
+      setItems(newItems.length > MAX_IN_MEMORY ? newItems.slice(0, MAX_IN_MEMORY) : newItems);
+      setStartOffset(off);
+      if (newItems.length > MAX_IN_MEMORY) {
+        setFirstItemIndex((i) => i + (newItems.length - MAX_IN_MEMORY));
+      } else {
+        setFirstItemIndex((i) => i + messages.length);
+      }
+    } finally {
+      setLoadingTop(false);
+      loadingRef.current = false;
+    }
+  }, [fetchPage, items, startOffset]);
+
+  const loadMoreBottom = useCallback(async () => {
+    if (loadingRef.current) return;
+    const endOffset = startOffset + items.length;
+    if (total > 0 && endOffset >= total) return;
+    loadingRef.current = true;
+    setLoadingBottom(true);
+    try {
+      const { messages } = await fetchPage(endOffset);
+      if (!messages?.length) return;
+      let newItems = [...items, ...messages];
+      let newStart = startOffset;
+      let newFirst = firstItemIndex;
+      if (newItems.length > MAX_IN_MEMORY) {
+        const drop = newItems.length - MAX_IN_MEMORY;
+        newItems = newItems.slice(drop);
+        newStart += drop;
+        newFirst += drop;
+      }
+      setItems(newItems);
+      setStartOffset(newStart);
+      setFirstItemIndex(newFirst);
+    } finally {
+      setLoadingBottom(false);
+      loadingRef.current = false;
+    }
+  }, [fetchPage, items, startOffset, firstItemIndex, total]);
+
+  const formatDate = (d) => {
+    if (!d) return '';
+    try {
+      const dt = new Date(d);
+      return dt.toLocaleString();
+    } catch {
+      return String(d);
+    }
+  };
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchQueryLower = searchQuery.trim().toLowerCase();
+  const filteredItems = searchQueryLower
+    ? items.filter((msg) => {
+        const text = (msg.text || '').toLowerCase();
+        const media = (msg.media_type || '').toLowerCase();
+        return text.includes(searchQueryLower) || media.includes(searchQueryLower);
+      })
+    : items;
+
+  const handleBackdropClick = (e) => {
+    if (e.target === e.currentTarget) onClose();
+  };
+
+  if (loading && items.length === 0) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+        onClick={handleBackdropClick}
+      >
+        <div className="glass-card p-8 max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-white">{title}</h2>
+            <button onClick={onClose} className="p-2 text-slate-400 hover:text-white rounded">
+              <ChevronLeft size={20} />
+            </button>
+          </div>
+          <p className="text-slate-400 text-center py-12">Загрузка сообщений…</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={handleBackdropClick}
+    >
+      <div className="glass-card flex flex-col max-w-2xl w-full max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-slate-700/50 shrink-0">
+          <h2 className="text-xl font-bold text-white truncate pr-4">{title}</h2>
+          <button
+            onClick={onClose}
+            className="p-2 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 transition-colors"
+          >
+            <ChevronLeft size={20} />
+          </button>
+        </div>
+        <div className="px-4 py-2 border-b border-slate-700/30 shrink-0 flex items-center gap-2">
+          <Search size={14} className="text-slate-500 shrink-0" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Поиск по сообщениям…"
+            className="flex-1 bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
+          />
+        </div>
+        <p className="text-xs text-slate-500 px-4 py-1 shrink-0">
+          {searchQuery.trim() ? `${filteredItems.length} из ${items.length}` : items.length} из {total} сообщений (подгрузка при прокрутке)
+        </p>
+        <div className="flex-1 min-h-0 relative">
+          <Virtuoso
+            style={{ height: '100%', minHeight: 360 }}
+            data={filteredItems}
+            firstItemIndex={searchQuery.trim() ? 0 : firstItemIndex}
+            startReached={loadMoreTop}
+            endReached={loadMoreBottom}
+            overscan={200}
+            itemContent={(idx, msg) => (
+              <div className="px-4 py-2 border-b border-slate-700/30 hover:bg-slate-800/30">
+                <div className="flex items-start gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] text-slate-500 font-medium">{formatDate(msg.date)}</p>
+                    {msg.text ? (
+                      <p className="text-sm text-slate-200 break-words mt-0.5">{msg.text}</p>
+                    ) : null}
+                    {msg.has_media ? (
+                      <span className="inline-flex items-center gap-1 mt-1 text-xs text-blue-400">
+                        <Image size={12} /> {msg.media_type || 'Media'}
+                        {msg.file_size > 0 && (
+                          <span className="text-slate-500">
+                            ({(msg.file_size / 1024).toFixed(1)} KB)
+                          </span>
+                        )}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            )}
+            components={{
+              Header: () => loadingTop ? (
+                <div className="px-4 py-2 text-center text-slate-500 text-sm">Загрузка…</div>
+              ) : null,
+              Footer: () => loadingBottom ? (
+                <div className="px-4 py-2 text-center text-slate-500 text-sm">Загрузка…</div>
+              ) : null,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const Dashboard = () => {
   const [progress, setProgress] = useState({
     overall: { total: 0, completed: 0, status: "Idle", speed: 0 },
@@ -32,6 +239,7 @@ const Dashboard = () => {
   const [stats, setStats] = useState({ enabled: false, chats: [], history: [] });
   const [statsUpdatedAt, setStatsUpdatedAt] = useState(null);
   const [connected, setConnected] = useState(false);
+  const [selectedChat, setSelectedChat] = useState(null);
   const ws = useRef(null);
   const speedBuffer = useRef([]);
   const etaBuffer = useRef([]);
@@ -134,7 +342,17 @@ const Dashboard = () => {
   });
 
   return (
-    <div className="app-container p-4 md:p-8 max-w-7xl mx-auto space-y-8">
+    <div className="app-container p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative">
+      <AnimatePresence>
+        {selectedChat && (
+          <ChatViewer
+            key={selectedChat.chat_id}
+            chatId={selectedChat.chat_id}
+            title={selectedChat.title}
+            onClose={() => setSelectedChat(null)}
+          />
+        )}
+      </AnimatePresence>
       {/* Header */}
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -306,8 +524,12 @@ const Dashboard = () => {
                  </div>
                )}
 
-               {stats?.enabled !== false && stats?.connected !== false && !stats?.error && (stats?.chats?.length || 0) > 0 && stats.chats.map((chat, idx) => (
-                 <div key={idx} className="bg-slate-900/40 p-3 rounded-lg border border-slate-600/30 flex items-center justify-between hover:bg-slate-800/50 transition-colors cursor-default">
+               {stats?.enabled !== false && stats?.connected !== false && !stats?.error && (stats?.chats?.length || 0) > 0 && stats.chats.map((chat) => (
+                 <div
+                   key={chat.chat_id ?? chat.title}
+                   onClick={() => chat.chat_id != null && setSelectedChat({ chat_id: chat.chat_id, title: chat.title || `Chat ${chat.chat_id}` })}
+                   className="bg-slate-900/40 p-3 rounded-lg border border-slate-600/30 flex items-center justify-between hover:bg-slate-800/50 hover:border-emerald-500/30 transition-colors cursor-pointer"
+                 >
                     <div>
                       <p className="text-sm font-bold text-white">{chat.title}</p>
                       <p className="text-[10px] text-slate-400 font-medium">{(chat.size / (1024*1024*1024)).toFixed(2)} GB • {chat.count} msgs</p>
