@@ -281,6 +281,19 @@ import os
 static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.exists(static_path):
     app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
+else:
+    @app.get("/")
+    @app.get("/{full_path:path}")
+    def _serve_frontend_fallback(full_path: str = ""):
+        """Если папка static не собрана — подсказка собрать фронтенд."""
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(
+            "<!DOCTYPE html><html><head><meta charset='utf-8'><title>TMD Dashboard</title></head><body>"
+            "<h1>Фронтенд не собран</h1><p>Выполните в корне проекта:</p>"
+            "<pre>cd web/ui && npm install && npm run build</pre>"
+            "<p>Затем перезапустите приложение с <code>--web</code>.</p></body></html>",
+            status_code=503,
+        )
 
 def run_server(host="0.0.0.0", port=8000):
     import uvicorn
