@@ -13,7 +13,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Set
+from typing import Any, Dict, Iterable, List, Set
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +37,8 @@ class CleanupResult:
     orphaned_files_count: int
     removed_files_count: int
     errors_count: int
+    missing_archived_count: int = 0
+    removed_dirs_count: int = 0
 
 
 def _iter_jsonl(path: str) -> Iterable[Dict[str, Any]]:
@@ -114,6 +116,28 @@ def _collect_archived_files(base_directory: str, history_directory: str) -> Set[
 
     logger.info("Всего файлов в архивах: %d", len(archived_files))
     return archived_files
+
+
+def _log_missing_archived_files(archived_files: Set[str]) -> int:
+    """
+    Залогировать файлы, упомянутые в архиве, но отсутствующие на диске.
+
+    Returns
+    -------
+    int
+        Количество отсутствующих файлов.
+    """
+    missing = [p for p in archived_files if not os.path.exists(p)]
+    if not missing:
+        return 0
+    logger.warning(
+        "В архиве указано %d файлов, которых нет на диске (битые ссылки в истории)",
+        len(missing),
+    )
+    if logger.isEnabledFor(logging.DEBUG):
+        for path in sorted(missing):
+            logger.debug("  Отсутствует: %s", path)
+    return len(missing)
 
 
 def _scan_media_directories(base_directory: str) -> Set[str]:
@@ -242,10 +266,80 @@ def _remove_files(file_paths: Set[str], dry_run: bool = True) -> tuple[int, int]
     return removed_count, errors_count
 
 
+def _remove_empty_dirs(
+    removed_file_paths: Set[str],
+    base_directory: str,
+    dry_run: bool = True,
+) -> int:
+    """
+    Удалить пустые директории после удаления файлов (внутри папок медиа).
+
+    Обходит родительские каталоги удалённых файлов снизу вверх и удаляет
+    пустые папки. Только в пределах base_directory и MEDIA_TYPES.
+
+    Returns
+    -------
+    int
+        Количество удалённых пустых папок.
+    """
+    if not removed_file_paths:
+        return 0
+
+    # Собрать все родительские пути до base_directory (включительно не удаляем)
+    candidates: Set[str] = set()
+    for file_path in removed_file_paths:
+        base_abs = os.path.abspath(base_directory)
+        parent = os.path.dirname(file_path)
+        while parent and os.path.abspath(parent) != base_abs:
+            # Только папки внутри папок медиа
+            rel = os.path.relpath(parent, base_abs).split(os.sep)
+            if rel and rel[0] in MEDIA_TYPES:
+                candidates.add(os.path.normpath(parent))
+            parent = os.path.dirname(parent)
+
+    # Сортировать от самых глубоких к корневым
+    sorted_dirs = sorted(candidates, key=lambda p: p.count(os.sep), reverse=True)
+    empty_to_remove: List[str] = []
+    for dir_path in sorted_dirs:
+        if not os.path.isdir(dir_path):
+            continue
+        try:
+            contents = os.listdir(dir_path)
+        except OSError:
+            continue
+        if not contents or contents == [".", ".."]:
+            empty_to_remove.append(dir_path)
+
+    if not empty_to_remove:
+        return 0
+
+    if dry_run:
+        logger.info("[DRY RUN] Будет удалено пустых папок: %d", len(empty_to_remove))
+        for d in empty_to_remove:
+            logger.info("  %s", d)
+        return len(empty_to_remove)
+
+    removed_dirs = 0
+    for dir_path in empty_to_remove:
+        try:
+            if os.path.exists(dir_path) and os.path.isdir(dir_path):
+                if os.listdir(dir_path):
+                    continue
+                os.rmdir(dir_path)
+                removed_dirs += 1
+                logger.debug("Удалена пустая папка: %s", dir_path)
+        except OSError as e:
+            logger.warning("Не удалось удалить папку %s: %s", dir_path, e)
+    logger.info("Удалено пустых папок: %d", removed_dirs)
+    return removed_dirs
+
+
 def cleanup_orphaned_files(
     base_directory: str,
     history_directory: str = "history",
     dry_run: bool = True,
+    log_missing_archived: bool = True,
+    remove_empty_dirs: bool = False,
 ) -> CleanupResult:
     """
     Найти и удалить потерянные файлы.
@@ -258,6 +352,10 @@ def cleanup_orphaned_files(
         Имя папки истории внутри base_directory.
     dry_run: bool
         Если True, только показать что будет удалено, не удалять реально.
+    log_missing_archived: bool
+        Если True, логировать файлы из архива, которых нет на диске.
+    remove_empty_dirs: bool
+        Если True, после удаления файлов удалять оставшиеся пустые папки в папках медиа.
 
     Returns
     -------
@@ -276,6 +374,11 @@ def cleanup_orphaned_files(
     # Собрать файлы из архивов
     archived_files = _collect_archived_files(base_directory, history_directory)
 
+    # Опционально: логировать файлы из архива, которых нет на диске
+    missing_archived_count = 0
+    if log_missing_archived and archived_files:
+        missing_archived_count = _log_missing_archived_files(archived_files)
+
     # Просканировать папки медиа
     media_files = _scan_media_directories(base_directory)
 
@@ -285,12 +388,19 @@ def cleanup_orphaned_files(
     # Удалить потерянные файлы
     removed_count, errors_count = _remove_files(orphaned_files, dry_run=dry_run)
 
+    # Опционально: удалить пустые папки после удаления файлов
+    removed_dirs_count = 0
+    if remove_empty_dirs and orphaned_files:
+        removed_dirs_count = _remove_empty_dirs(orphaned_files, base_directory, dry_run=dry_run)
+
     return CleanupResult(
         archived_files_count=len(archived_files),
         media_files_count=len(media_files),
         orphaned_files_count=len(orphaned_files),
         removed_files_count=removed_count,
         errors_count=errors_count,
+        missing_archived_count=missing_archived_count,
+        removed_dirs_count=removed_dirs_count,
     )
 
 
@@ -329,6 +439,16 @@ def main() -> int:
         "-v",
         action="store_true",
         help="Подробный вывод (уровень DEBUG)",
+    )
+    parser.add_argument(
+        "--no-log-missing",
+        action="store_true",
+        help="Не логировать файлы из архива, которых нет на диске",
+    )
+    parser.add_argument(
+        "--remove-empty-dirs",
+        action="store_true",
+        help="После удаления файлов удалять пустые папки в папках медиа",
     )
 
     args = parser.parse_args()
@@ -376,6 +496,8 @@ def main() -> int:
             base_directory=base_directory,
             history_directory=history_directory,
             dry_run=dry_run,
+            log_missing_archived=not args.no_log_missing,
+            remove_empty_dirs=args.remove_empty_dirs,
         )
 
         # Вывести итоговую статистику
@@ -384,9 +506,14 @@ def main() -> int:
         print(f"  Файлов в архивах: {result.archived_files_count}")
         print(f"  Файлов в папках медиа: {result.media_files_count}")
         print(f"  Потерянных файлов: {result.orphaned_files_count}")
+        if result.missing_archived_count:
+            print(f"  В архиве, но нет на диске: {result.missing_archived_count}")
         if not dry_run:
             print(f"  Удалено файлов: {result.removed_files_count}")
             print(f"  Ошибок: {result.errors_count}")
+        if result.removed_dirs_count:
+            label = "Будет удалено пустых папок" if dry_run else "Удалено пустых папок"
+            print(f"  {label}: {result.removed_dirs_count}")
         print("=" * 60)
 
         return 0

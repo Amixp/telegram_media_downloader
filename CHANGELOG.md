@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Чтение `base_directory` и `history_directory` из config.yaml при указании `--config PATH`
   - Относительный `base_directory` из конфига разрешается относительно каталога конфига
   - Вместо обязательного `--base-directory` можно указать только `--config config.yaml`
+- **cleanup_orphaned_files: логирование отсутствующих и удаление пустых папок**
+  - По умолчанию логируются файлы из архива, которых нет на диске (битые ссылки в истории); отключение: `--no-log-missing`
+  - Опция `--remove-empty-dirs`: после удаления потерянных файлов удалять оставшиеся пустые папки в папках медиа
+  - В статистике выводятся «В архиве, но нет на диске» и «Удалено пустых папок» (или «Будет удалено» в dry-run)
 - **ClickHouse как основной источник истории** (ветка feature/clickhouse-primary-source)
   - Поддержка чтения/записи истории из ClickHouse в `utils/history.py`, `utils/history_saver.py`
   - Опция `clickhouse.primary_source`: при включении проверка дублей и выгрузка — по ClickHouse
