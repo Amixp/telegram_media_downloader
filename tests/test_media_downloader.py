@@ -416,6 +416,125 @@ class MediaDownloaderTestCase(unittest.TestCase):
         kwargs_tqdm = mock_tqdm.call_args[1]
         self.assertEqual(kwargs_tqdm["initial"], 512)
 
+    def test_update_config_deduplicates_ids_to_retry(self):
+        """Очередь ids_to_retry не должна содержать дубликатов после update_config."""
+        tmpdir = tempfile.mkdtemp(prefix="tmd-test-dedup-")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        cfg_path = os.path.join(tmpdir, "config.yaml")
+        chat_id = 12345
+        cfg = {
+            "api_id": 1,
+            "api_hash": "x",
+            "language": "ru",
+            "media_types": ["all"],
+            "file_formats": {"video": ["all"]},
+            "download_settings": {"skip_duplicates": False, "max_ids_to_retry": 1000},
+            "chats": [
+                {
+                    "chat_id": chat_id,
+                    "title": "Test",
+                    "last_read_message_id": 100,
+                    "ids_to_retry": [10, 20, 20, 30],
+                    "enabled": True,
+                }
+            ],
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+        mgr = ConfigManager(config_path=cfg_path)
+        mgr.load()
+        dm = DownloadManager(mgr)
+        dm.config["chat_id"] = chat_id
+        dm.config["last_read_message_id"] = 100
+        dm.downloaded_ids = []
+        dm.failed_ids = [(chat_id, 20), (chat_id, 20), (chat_id, 40)]
+        dm.update_config(chat_id)
+        saved = mgr._config
+        chat = next(c for c in saved["chats"] if c["chat_id"] == chat_id)
+        ids = chat["ids_to_retry"]
+        self.assertEqual(len(ids), len(set(ids)), "ids_to_retry не должен содержать дубликатов")
+        self.assertIn(10, ids)
+        self.assertIn(20, ids)
+        self.assertIn(30, ids)
+        self.assertIn(40, ids)
+        self.assertEqual(len(ids), 4)
+
+    @mock.patch("core.downloader.asyncio.sleep", new_callable=mock.AsyncMock)
+    @mock.patch("core.downloader.os.makedirs")
+    @mock.patch("core.downloader.os.path.exists")
+    @mock.patch("core.downloader.os.path.getsize")
+    @mock.patch("core.downloader.shutil.move")
+    @mock.patch("core.downloader.open", create=True)
+    @mock.patch("core.downloader.tqdm")
+    @mock.patch("core.downloader.PROJECT_ROOT", new=MOCK_DIR)
+    def test_download_media_refetch_on_unknown_exception(
+        self, mock_tqdm, mock_open, mock_move, mock_getsize, mock_exists, mock_makedirs, mock_sleep
+    ):
+        """При неизвестном исключении делается refetch сообщения и повтор; после успеха — не в failed_ids."""
+        def exists_side_effect(path):
+            if "config.yaml" in str(path):
+                return True
+            return False
+        mock_exists.side_effect = exists_side_effect
+        mock_open.return_value.__enter__.return_value = mock.Mock()
+        mock_pbar = mock.Mock()
+        mock_tqdm.return_value.__enter__ = mock.Mock(return_value=mock_pbar)
+        mock_tqdm.return_value.__exit__ = mock.Mock(return_value=None)
+
+        tmpdir = tempfile.mkdtemp(prefix="tmd-test-refetch-")
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        cfg_path = os.path.join(tmpdir, "config.yaml")
+        cfg = {
+            "api_id": 1,
+            "api_hash": "x",
+            "language": "ru",
+            "media_types": ["all"],
+            "file_formats": {"video": ["all"]},
+            "download_settings": {
+                "skip_duplicates": False,
+                "resumable_downloads": False,
+                "validate_downloads": False,
+            },
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True)
+        mgr = ConfigManager(config_path=cfg_path)
+        mgr.load()
+        dm = DownloadManager(mgr)
+        dm.config["chat_id"] = 123456
+
+        msg = MockMessage(
+            id=99,
+            media=True,
+            chat_id=123456,
+            video=MockVideo(file_name="refetch_test.mp4", mime_type="video/mp4", size=100),
+        )
+        call_count = [0]
+
+        async def download_side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("Unknown error (e.g. wrong session)")
+            return kwargs.get("file") or "downloaded"
+
+        async def get_messages_side_effect(chat_oid, ids=None):
+            if ids is not None and msg.id in (ids if isinstance(ids, list) else [ids]):
+                return [msg]
+            return []
+
+        client = MockClient()
+        client.download_media = mock.Mock(side_effect=download_side_effect)
+        client.get_messages = mock.Mock(side_effect=get_messages_side_effect)
+
+        result = self.loop.run_until_complete(
+            dm.download_media(client, msg, ["video"], {"video": ["all"]})
+        )
+        self.assertEqual(result, 99)
+        self.assertEqual(call_count[0], 2, "Ожидались 2 вызова: сбой, затем успех после refetch")
+        client.get_messages.assert_called()
+        failed_for_chat = [(c, m) for (c, m) in dm.failed_ids if c == 123456 and m == 99]
+        self.assertEqual(len(failed_for_chat), 0, "Сообщение не должно попасть в failed_ids после успешного refetch")
+
     @classmethod
     def tearDownClass(cls):
         asyncio.set_event_loop(None)

@@ -76,6 +76,7 @@ class I18n:
                 "timeout_error": "Ошибка таймаута при загрузке сообщения[{id}], повтор через 5 секунд",
                 "timeout_skip": "Таймаут для сообщения[{id}] после 3 попыток, пропуск загрузки.",
                 "download_exception": "Не удалось загрузить сообщение[{id}] из-за исключения:\n[{error}].",
+                "download_exception_refetch": "Повторная попытка для сообщения[{id}] после обновления (refetch)...",
                 "validation_failed_media": "Валидация не пройдена для {path} (сообщение {id}): файл повреждён или обрезан.",
                 "processed_batch": "Обработана партия из {count} сообщений",
                 # Состояние
@@ -128,6 +129,7 @@ class I18n:
                 "timeout_error": "Timeout error occurred when downloading message[{id}], retrying after 5 seconds",
                 "timeout_skip": "Timing out for message[{id}] after 3 retries, download skipped.",
                 "download_exception": "Could not download message[{id}] due to following exception:\n[{error}].",
+                "download_exception_refetch": "Retrying message[{id}] after refetch...",
                 "validation_failed_media": "Validation failed for {path} (message {id}): file corrupted or truncated.",
                 "processed_batch": "Processed batch of {count} messages",
                 # State

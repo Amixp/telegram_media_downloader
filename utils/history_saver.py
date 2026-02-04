@@ -180,6 +180,18 @@ class HistorySaver(ABC):
 class JsonHistorySaver(HistorySaver):
     """Стратегия сохранения истории в JSON (JSONL) формате."""
 
+    def __init__(
+        self,
+        history_path: str,
+        config_manager: Optional[Any] = None,
+        found_chat_ids: Optional[Set[int]] = None,
+        clickhouse_db: Optional[Any] = None,
+        clickhouse_primary_source: bool = False,
+    ):
+        super().__init__(history_path, config_manager, found_chat_ids)
+        self.ch_db = clickhouse_db
+        self.ch_primary_source = clickhouse_primary_source
+
     def save_message(
         self,
         message: Message,
@@ -228,10 +240,19 @@ class JsonHistorySaver(HistorySaver):
         downloaded_files = downloaded_files or {}
         path_id = _archive_chat_id_for_path(chat_id)
         archive_path = os.path.join(self.history_path, f"chat_{path_id}.jsonl")
-
-        # Проверка дублей
         message_ids = [msg.id for msg in messages]
-        if self._check_archive_duplicates(archive_path, message_ids):
+
+        # Проверка дублей: при primary_source — по ClickHouse
+        if self.ch_primary_source and self.ch_db and self.ch_db.enabled:
+            existing = self.ch_db.get_existing_message_ids(chat_id, message_ids)
+            if message_ids and set(message_ids) <= existing:
+                logger.info(
+                    "Архив чата уже содержит все сообщения (ClickHouse): chat_id=%s, сообщений=%s (пропуск сохранения)",
+                    chat_id,
+                    len(messages),
+                )
+                return
+        elif self._check_archive_duplicates(archive_path, message_ids):
             logger.info(
                 "Архив чата уже содержит все сообщения: chat_id=%s, path=%s, сообщений=%s (пропуск сохранения)",
                 chat_id,
@@ -362,6 +383,8 @@ class HtmlHistorySaver(HistorySaver):
         found_chat_ids: Optional[Set[int]] = None,
         template_env: Optional[Environment] = None,
         index_manifest_file: Optional[str] = None,
+        clickhouse_db: Optional[Any] = None,
+        clickhouse_primary_source: bool = False,
     ):
         """
         Инициализация стратегии HTML сохранения.
@@ -378,6 +401,10 @@ class HtmlHistorySaver(HistorySaver):
             Jinja2 окружение для рендеринга шаблонов.
         index_manifest_file: Optional[str]
             Путь к файлу манифеста индекса.
+        clickhouse_db: Optional[Any]
+            ClickHouseMetadataDB при primary_source.
+        clickhouse_primary_source: bool
+            True — проверка дублей и чтение архива из ClickHouse.
         """
         super().__init__(history_path, config_manager, found_chat_ids)
         self.template_env = template_env
@@ -386,6 +413,8 @@ class HtmlHistorySaver(HistorySaver):
         )
         self.html_formatter = HtmlFormatter(self.found_chat_ids)
         self.chats_info: Dict[int, Dict[str, Any]] = {}
+        self.ch_db = clickhouse_db
+        self.ch_primary_source = clickhouse_primary_source
 
     def save_message(
         self,
@@ -470,10 +499,25 @@ class HtmlHistorySaver(HistorySaver):
         downloaded_files = downloaded_files or {}
         path_id = _archive_chat_id_for_path(chat_id)
         archive_path = os.path.join(self.history_path, f"chat_{path_id}.jsonl")
-
-        # Проверка дублей
         message_ids = [msg.id for msg in messages]
-        if self._check_archive_duplicates(archive_path, message_ids):
+
+        # Проверка дублей: при primary_source — по ClickHouse
+        if self.ch_primary_source and self.ch_db and self.ch_db.enabled:
+            existing = self.ch_db.get_existing_message_ids(chat_id, message_ids)
+            if message_ids and set(message_ids) <= existing:
+                logger.info(
+                    "Архив чата уже содержит все сообщения (ClickHouse): chat_id=%s, сообщений=%s (пропуск сохранения)",
+                    chat_id,
+                    len(messages),
+                )
+                self._generate_index_html(
+                    load_index_manifest_fn,
+                    save_index_manifest_fn,
+                    list_chat_ids_from_jsonl_fn,
+                    try_get_chat_meta_from_jsonl_fn,
+                )
+                return
+        elif self._check_archive_duplicates(archive_path, message_ids):
             logger.info(
                 "Архив чата уже содержит все сообщения: chat_id=%s, path=%s, сообщений=%s (пропуск сохранения)",
                 chat_id,
@@ -549,22 +593,25 @@ class HtmlHistorySaver(HistorySaver):
             return
 
         path_id = _archive_chat_id_for_path(chat_id)
-        jsonl_file = os.path.join(self.history_path, f"chat_{path_id}.jsonl")
-        if not os.path.exists(jsonl_file):
-            return
-
         messages: List[Dict[str, Any]] = []
-        with open(jsonl_file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(obj, dict):
-                    messages.append(obj)
+
+        if self.ch_primary_source and self.ch_db and self.ch_db.enabled:
+            messages = self.ch_db.get_messages_for_chat(chat_id)
+        else:
+            jsonl_file = os.path.join(self.history_path, f"chat_{path_id}.jsonl")
+            if not os.path.exists(jsonl_file):
+                return
+            with open(jsonl_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(obj, dict):
+                        messages.append(obj)
 
         if not messages:
             return

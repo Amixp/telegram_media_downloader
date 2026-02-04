@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `_iter_download_chunks()` в `core/downloader.py`: обёртка над `iter_download` с `asyncio.wait_for(anext(...), timeout)` — задача периодически «просыпается», Ctrl+C обрабатывается быстрее
   - В логе при зависании: «Загрузка сообщения X зависла: нет данных более N сек (download_chunk_timeout)»
   - В обработчике SIGINT добавлен `loop.call_soon_threadsafe(loop.stop)` для выхода при зависшей загрузке
+- **ClickHouse как основной источник истории** (ветка feature/clickhouse-primary-source)
+  - Поддержка чтения/записи истории из ClickHouse в `utils/history.py`, `utils/history_saver.py`
+  - Опция `clickhouse.primary_source`: при включении проверка дублей и выгрузка — по ClickHouse
+  - Обновлён `export_chat.py` для работы с ClickHouse
+  - Расширены тесты: `test_export_chat.py`, `test_media_downloader.py`, `test_history.py`, `test_audit.py`
+  - Обновлена документация в `docs/ARCHITECTURE.md`
 - **Настроен Tailwind CSS для Web Dashboard** (`web/ui/`)
   - Установлен Tailwind CSS v3 с зависимостями (postcss, autoprefixer)
   - Созданы конфигурационные файлы: `tailwind.config.js`, `postcss.config.js`

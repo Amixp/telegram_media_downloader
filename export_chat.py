@@ -57,6 +57,20 @@ def _link_or_copy(src: str, dst: str, mode: str) -> None:
     shutil.copy2(src, dst)
 
 
+def _iter_messages(
+    jsonl_path: Optional[str],
+    clickhouse_db: Optional[Any],
+    chat_id: int,
+) -> Iterable[Dict[str, Any]]:
+    """Итератор по сообщениям: из JSONL или из ClickHouse при primary_source."""
+    if clickhouse_db is not None and getattr(clickhouse_db, "enabled", False):
+        for msg in clickhouse_db.get_messages_for_chat(chat_id):
+            yield msg
+        return
+    if jsonl_path and os.path.exists(jsonl_path):
+        yield from _iter_jsonl(jsonl_path)
+
+
 def _unique_name(base_dir: str, name: str) -> str:
     candidate = name
     root, ext = os.path.splitext(name)
@@ -74,6 +88,7 @@ def export_chat(
     out_directory: str,
     history_directory: str = "history",
     link_mode: str = "hardlink",
+    clickhouse_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[ExportResult, str]:
     """
     Экспортировать один чат в отдельную папку.
@@ -90,6 +105,8 @@ def export_chat(
         Имя папки истории внутри base_directory.
     link_mode: str
         "hardlink" (по умолчанию) или "copy".
+    clickhouse_config: Optional[Dict]
+        Секция clickhouse конфига; при enabled и primary_source источник — ClickHouse.
 
     Returns
     -------
@@ -103,7 +120,17 @@ def export_chat(
     jsonl_path = os.path.join(history_path, f"chat_{path_id}.jsonl")
     html_path = os.path.join(history_path, f"chat_{path_id}.html")
 
-    if not os.path.exists(jsonl_path):
+    ch_cfg = clickhouse_config or {}
+    use_ch = ch_cfg.get("enabled", False) and ch_cfg.get("primary_source", False)
+    clickhouse_db: Optional[Any] = None
+    if use_ch:
+        from utils.clickhouse_db import ClickHouseMetadataDB
+        clickhouse_db = ClickHouseMetadataDB(ch_cfg)
+        if not clickhouse_db.enabled:
+            clickhouse_db = None
+            use_ch = False
+
+    if not use_ch and not os.path.exists(jsonl_path):
         raise FileNotFoundError(jsonl_path)
 
     export_path = os.path.join(out_directory, f"chat_{chat_id}")
@@ -111,7 +138,8 @@ def export_chat(
     _safe_mkdir(media_out)
 
     # Скопировать “контейнеры”
-    shutil.copy2(jsonl_path, os.path.join(export_path, os.path.basename(jsonl_path)))
+    if os.path.exists(jsonl_path):
+        shutil.copy2(jsonl_path, os.path.join(export_path, os.path.basename(jsonl_path)))
     if os.path.exists(html_path):
         shutil.copy2(html_path, os.path.join(export_path, os.path.basename(html_path)))
 
@@ -120,7 +148,7 @@ def export_chat(
     skipped = 0
     manifest: List[Dict[str, Any]] = []
 
-    for msg in _iter_jsonl(jsonl_path):
+    for msg in _iter_messages(jsonl_path, clickhouse_db, chat_id):
         msg_id = msg.get("id")
         src = msg.get("downloaded_file")
         if not src or not isinstance(src, str):
@@ -169,7 +197,17 @@ def main() -> int:
         default="hardlink",
         help="hardlink быстрее/без дублей, copy — переносимая копия (default: hardlink)",
     )
+    p.add_argument("--config", default="config.yaml", help="Путь к config.yaml для clickhouse.primary_source")
     args = p.parse_args()
+
+    clickhouse_config: Optional[Dict[str, Any]] = None
+    if os.path.exists(args.config):
+        try:
+            from utils.config import ConfigManager
+            cfg = ConfigManager(config_path=args.config).load()
+            clickhouse_config = cfg.get("clickhouse")
+        except Exception:
+            pass
 
     result, export_path = export_chat(
         base_directory=args.base_directory,
@@ -177,6 +215,7 @@ def main() -> int:
         out_directory=args.out,
         history_directory=args.history_directory,
         link_mode=args.link_mode,
+        clickhouse_config=clickhouse_config,
     )
 
     print(f"Экспортировано: {result.exported}, отсутствуют: {result.missing}, пропущено: {result.skipped}")

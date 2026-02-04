@@ -139,7 +139,9 @@ class TestAudit(unittest.TestCase):
         if data.get("enabled") is False:
             self.assertIn("error", data)
         else:
-            self.assertIn("total_downloaded", data)
+            self.assertIn("chats", data)
+            self.assertIn("history", data)
+            self.assertIn("connected", data)
 
 if __name__ == "__main__":
     unittest.main()

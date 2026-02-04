@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 
 sys.path.append("..")  # Adds higher directory to python modules path.
 
@@ -222,4 +223,68 @@ class HistoryTestCase(unittest.TestCase):
             with open(jsonl_path, "r", encoding="utf-8") as f:
                 lines = [ln.strip() for ln in f if ln.strip()]
             self.assertEqual(len(lines), 3, "Новое сообщение должно было добавиться")
+
+    def test_save_batch_html_skips_duplicates_from_clickhouse_and_generates_index(self):
+        """При clickhouse_primary_source=True проверка дублей по CH, индекс из CH."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_dir = os.path.join(tmpdir, "history")
+            os.makedirs(history_dir, exist_ok=True)
+
+            chat_id = -999
+            path_id = abs(chat_id)
+            last_date = datetime(2022, 2, 2, tzinfo=timezone.utc)
+
+            mock_ch = mock.Mock()
+            mock_ch.enabled = True
+            mock_ch.get_existing_message_ids.return_value = {1, 2}
+            mock_ch.get_chats_manifest.return_value = [(chat_id, "CH Chat Title", 2, last_date)]
+            mock_ch.get_chat_meta.return_value = ("CH Chat Title", 2, last_date)
+
+            history = MessageHistory(
+                base_directory=tmpdir,
+                history_format="html",
+                history_directory="history",
+                clickhouse_db=mock_ch,
+                clickhouse_primary_source=True,
+            )
+
+            msg1 = mock.Mock()
+            msg1.id = 1
+            msg1.date = datetime(2022, 2, 2, tzinfo=timezone.utc)
+            msg1.message = "m1"
+            msg1.media = None
+            msg1.sender_id = 0
+            msg1.reply_to = None
+            msg1.edit_date = None
+            msg1.views = None
+            msg1.forwards = None
+            msg2 = mock.Mock()
+            msg2.id = 2
+            msg2.date = last_date
+            msg2.message = "m2"
+            msg2.media = None
+            msg2.sender_id = 0
+            msg2.reply_to = None
+            msg2.edit_date = None
+            msg2.views = None
+            msg2.forwards = None
+
+            history.save_batch([msg1, msg2], chat_id, "CH Chat Title", {})
+
+            mock_ch.get_existing_message_ids.assert_called_once_with(chat_id, [1, 2])
+            mock_ch.get_chats_manifest.assert_called()
+            mock_ch.get_chat_meta.assert_called()
+
+            jsonl_path = os.path.join(history_dir, f"chat_{path_id}.jsonl")
+            self.assertFalse(
+                os.path.exists(jsonl_path),
+                "При дублях по CH в JSONL не пишем",
+            )
+
+            index_path = os.path.join(history_dir, "index.html")
+            self.assertTrue(os.path.exists(index_path), "Индекс должен быть сгенерирован из CH")
+            with open(index_path, "r", encoding="utf-8") as f:
+                index_html = f.read()
+            self.assertIn("CH Chat Title", index_html)
+            self.assertIn("2 сообщений", index_html, "Мета из get_chat_meta попала в индекс")
 

@@ -29,6 +29,8 @@ class MessageHistory:
         history_format: str = "json",
         history_directory: str = "history",
         config_manager: Optional[Any] = None,
+        clickhouse_db: Optional[Any] = None,
+        clickhouse_primary_source: bool = False,
     ):
         """
         Инициализация MessageHistory.
@@ -43,6 +45,10 @@ class MessageHistory:
             Имя директории для истории внутри базовой директории.
         config_manager: Optional[Any]
             Менеджер конфигурации для добавления чатов из ссылок.
+        clickhouse_db: Optional[Any]
+            ClickHouseMetadataDB при primary_source.
+        clickhouse_primary_source: bool
+            True — архив и проверка дублей по ClickHouse.
         """
         self.base_directory = base_directory
         self.history_format = history_format.lower()
@@ -53,6 +59,8 @@ class MessageHistory:
         self._index_manifest_file = os.path.join(self.history_path, "index.json")
         self.config_manager = config_manager
         self._found_chat_ids: Set[int] = set()
+        self.clickhouse_db = clickhouse_db
+        self.clickhouse_primary_source = clickhouse_primary_source
 
         # Initialize Jinja2
         templates_dir = os.path.join(
@@ -67,7 +75,11 @@ class MessageHistory:
         """Создать стратегию сохранения на основе формата."""
         if self.history_format in ("json", "jsonl"):
             return JsonHistorySaver(
-                self.history_path, self.config_manager, self._found_chat_ids
+                self.history_path,
+                self.config_manager,
+                self._found_chat_ids,
+                clickhouse_db=self.clickhouse_db,
+                clickhouse_primary_source=self.clickhouse_primary_source,
             )
         elif self.history_format == "html":
             return HtmlHistorySaver(
@@ -76,6 +88,8 @@ class MessageHistory:
                 self._found_chat_ids,
                 self.template_env,
                 self._index_manifest_file,
+                clickhouse_db=self.clickhouse_db,
+                clickhouse_primary_source=self.clickhouse_primary_source,
             )
         elif self.history_format == "txt":
             return TxtHistorySaver(
@@ -146,7 +160,14 @@ class MessageHistory:
             # Передать chats_info в стратегию
             self.saver.chats_info = self.chats_info
 
-            # Делегировать с передачей функций для работы с манифестом
+            # При primary_source — список чатов и мета из ClickHouse
+            if self.clickhouse_primary_source and self.clickhouse_db and self.clickhouse_db.enabled:
+                list_fn = self._list_chat_ids_from_clickhouse
+                meta_fn = self._try_get_chat_meta_from_clickhouse
+            else:
+                list_fn = self._list_chat_ids_from_jsonl
+                meta_fn = self._try_get_chat_meta_from_jsonl
+
             self.saver.save_batch(
                 messages,
                 chat_id,
@@ -154,8 +175,8 @@ class MessageHistory:
                 downloaded_files,
                 load_index_manifest_fn=self._load_index_manifest,
                 save_index_manifest_fn=self._save_index_manifest,
-                list_chat_ids_from_jsonl_fn=self._list_chat_ids_from_jsonl,
-                try_get_chat_meta_from_jsonl_fn=self._try_get_chat_meta_from_jsonl,
+                list_chat_ids_from_jsonl_fn=list_fn,
+                try_get_chat_meta_from_jsonl_fn=meta_fn,
             )
         else:
             # Для JSON и TXT стратегий просто делегируем
@@ -387,6 +408,20 @@ class MessageHistory:
                 last_message_date = None
 
         return title, message_count, last_message_date
+
+    def _list_chat_ids_from_clickhouse(self) -> List[int]:
+        """Список chat_id из ClickHouse (при primary_source)."""
+        if not self.clickhouse_db or not self.clickhouse_db.enabled:
+            return []
+        return [row[0] for row in self.clickhouse_db.get_chats_manifest()]
+
+    def _try_get_chat_meta_from_clickhouse(
+        self, chat_id: int
+    ) -> Optional[Tuple[str, int, Optional[datetime]]]:
+        """Мета чата из ClickHouse (при primary_source)."""
+        if not self.clickhouse_db or not self.clickhouse_db.enabled:
+            return None
+        return self.clickhouse_db.get_chat_meta(chat_id)
 
     @staticmethod
     def _parse_iso_dt(value: Any) -> Optional[datetime]:
