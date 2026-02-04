@@ -23,6 +23,9 @@ class DownloadSettings(BaseModel):
     auto_add_chats_from_links: bool = False
     resumable_downloads: bool = True
     cache_directory: str = ".download_cache"
+    # Таймаут (сек) ожидания следующего чанка при загрузке. При превышении — TimeoutError и retry/пропуск.
+    # Помогает при зависании сети и быстрее реагирует на Ctrl+C (задача просыпается).
+    download_chunk_timeout: int = 300
     archive_settings: ArchiveSettings = Field(default_factory=ArchiveSettings)
 
 class SenderFilter(BaseModel):
@@ -129,6 +132,8 @@ class ClickHouseConfig(BaseModel):
     password: str = ""
     database: str = "telegram_downloader"
     batch_size: int = 1000
+    # При True: архив и статистика — из ClickHouse; проверка дублей и выгрузки — по CH
+    primary_source: bool = False
 
 class AppConfig(BaseModel):
     api_id: Optional[Union[int, str]] = None

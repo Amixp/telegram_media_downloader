@@ -2,7 +2,7 @@
 import logging
 import os
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Any, Callable, Optional
 
 
 class LogFilter(logging.Filter):
@@ -77,6 +77,31 @@ def setup_file_logging(
     except Exception as e:
         logging.error(f"Не удалось настроить файловое логирование: {e}")
         return None
+
+
+class ClickHouseLogHandler(logging.Handler):
+    """
+    Обработчик логов, записывающий записи в ClickHouse (через буфер).
+    get_db: callable, возвращающий ClickHouseMetadataDB, или сам экземпляр.
+    """
+
+    def __init__(self, get_db: Any):
+        super().__init__()
+        self._get_db = get_db
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            db = self._get_db() if callable(self._get_db) else self._get_db
+            if db is None or not getattr(db, "enabled", True):
+                return
+            message = self.format(record)
+            db.save_log(
+                level=record.levelname,
+                message=message,
+                logger_name=record.name or "",
+            )
+        except Exception:  # pragma: no cover
+            self.handleError(record)
 
 
 def configure_logging(

@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Сохранение логов в ClickHouse и просмотр с поиском**
+  - Таблица `app_logs` (ts, level, logger_name, message) в ClickHouse
+  - `ClickHouseLogHandler` в `utils/log.py`: буферная запись логов в БД при включённом ClickHouse
+  - Подключение хендлера в `media_downloader.py` при старте (один экземпляр БД для логов и загрузчика), `flush_logs()` при выходе
+  - API `GET /api/logs?q=...&level=...&limit=...&offset=...` — поиск по тексту и фильтр по уровню
+  - В дашборде вкладка «Логи»: поиск, фильтр по уровню, таблица, пагинация
+- **Файлы загрузки в ClickHouse: статус и пути**
+  - Таблица `file_downloads` (chat_id, message_id, chat_title, file_name, file_path, status, file_size, error_message, created_at)
+  - Запись при успешной загрузке (`downloaded`) и при ошибке (`failed`) через `_record_failed()` и `save_file_download()`
+  - API `GET /api/files?chat_id=...&status=...&q=...&limit=...&offset=...` — фильтры и поиск по имени/пути
+  - В дашборде вкладка «Файлы»: поиск, фильтры по чату и статусу, таблица с путями и ошибками, пагинация
+- **Таймаут на ожидание чанка загрузки и реакция на Ctrl+C**
+  - Опция `download_settings.download_chunk_timeout` (сек, по умолчанию 300): при отсутствии данных от Telegram дольше таймаута — TimeoutError и retry/пропуск
+  - `_iter_download_chunks()` в `core/downloader.py`: обёртка над `iter_download` с `asyncio.wait_for(anext(...), timeout)` — задача периодически «просыпается», Ctrl+C обрабатывается быстрее
+  - В логе при зависании: «Загрузка сообщения X зависла: нет данных более N сек (download_chunk_timeout)»
+  - В обработчике SIGINT добавлен `loop.call_soon_threadsafe(loop.stop)` для выхода при зависшей загрузке
 - **Настроен Tailwind CSS для Web Dashboard** (`web/ui/`)
   - Установлен Tailwind CSS v3 с зависимостями (postcss, autoprefixer)
   - Созданы конфигурационные файлы: `tailwind.config.js`, `postcss.config.js`

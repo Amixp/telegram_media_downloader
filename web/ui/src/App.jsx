@@ -4,6 +4,8 @@ import {
     ChevronLeft,
     ChevronRight,
     Database,
+    FileText,
+    FolderOpen,
     History,
     Image,
     Search,
@@ -28,6 +30,8 @@ const SMOOTH_WINDOW = 12;
 
 const PAGE_SIZE = 100;
 const MAX_IN_MEMORY = 500;
+const LOGS_PAGE_SIZE = 100;
+const FILES_PAGE_SIZE = 50;
 
 const ChatViewer = ({ chatId, title, onClose }) => {
   const [items, setItems] = useState([]);
@@ -230,7 +234,298 @@ const ChatViewer = ({ chatId, title, onClose }) => {
   );
 };
 
+const LogsView = ({ enabled }) => {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState('');
+  const [level, setLevel] = useState('');
+  const [offset, setOffset] = useState(0);
+
+  const fetchLogs = useCallback(async (off = 0) => {
+    if (!enabled) return;
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: String(off) });
+      if (query.trim()) params.set('q', query.trim());
+      if (level) params.set('level', level);
+      const res = await fetch(`/api/logs?${params}`);
+      const data = await res.json();
+      setItems(data.items || []);
+      setTotal(data.total || 0);
+      setOffset(off);
+    } finally {
+      setLoading(false);
+    }
+  }, [enabled, query, level]);
+
+  useEffect(() => {
+    fetchLogs(0);
+  }, [fetchLogs]);
+
+  const formatTs = (ts) => {
+    if (!ts) return '';
+    try { return new Date(ts).toLocaleString(); } catch { return String(ts); }
+  };
+
+  if (!enabled) {
+    return (
+      <section className="glass-card p-6">
+        <h3 className="card-title text-white"><FileText size={18} className="text-amber-400" /> Логи</h3>
+        <p className="text-slate-400 mt-4">Включите ClickHouse в config.yaml для сохранения и просмотра логов.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="glass-card p-6">
+      <h3 className="card-title text-white"><FileText size={18} className="text-amber-400" /> Логи</h3>
+      <div className="mt-4 flex flex-wrap gap-2 items-center">
+        <Search size={14} className="text-slate-500" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Поиск по тексту лога…"
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50 w-48 md:w-64"
+        />
+        <select
+          value={level}
+          onChange={(e) => setLevel(e.target.value)}
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-amber-500/50"
+        >
+          <option value="">Все уровни</option>
+          <option value="DEBUG">DEBUG</option>
+          <option value="INFO">INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+        <button
+          type="button"
+          onClick={() => fetchLogs(0)}
+          className="px-3 py-1.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 text-sm"
+        >
+          Обновить
+        </button>
+      </div>
+      <p className="text-xs text-slate-500 mt-2">{total} записей</p>
+      <div className="mt-4 overflow-x-auto max-h-[60vh] overflow-y-auto border border-slate-700/50 rounded-lg">
+        {loading && items.length === 0 ? (
+          <p className="p-4 text-slate-400">Загрузка…</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-slate-800/80 sticky top-0">
+              <tr>
+                <th className="text-left p-2 text-slate-400 font-medium">Время</th>
+                <th className="text-left p-2 text-slate-400 font-medium w-20">Уровень</th>
+                <th className="text-left p-2 text-slate-400 font-medium">Логгер</th>
+                <th className="text-left p-2 text-slate-400 font-medium">Сообщение</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row, i) => (
+                <tr key={i} className="border-t border-slate-700/30 hover:bg-slate-800/40">
+                  <td className="p-2 text-slate-500 whitespace-nowrap">{formatTs(row.ts)}</td>
+                  <td className="p-2">
+                    <span className={`font-mono text-xs ${
+                      row.level === 'ERROR' ? 'text-rose-400' : row.level === 'WARNING' ? 'text-amber-400' : 'text-slate-300'
+                    }`}>{row.level}</span>
+                  </td>
+                  <td className="p-2 text-slate-500 truncate max-w-[120px]">{row.logger_name}</td>
+                  <td className="p-2 text-slate-200 break-words">{row.message}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {total > LOGS_PAGE_SIZE && (
+        <div className="mt-2 flex gap-2">
+          <button
+            type="button"
+            disabled={offset <= 0 || loading}
+            onClick={() => fetchLogs(Math.max(0, offset - LOGS_PAGE_SIZE))}
+            className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 disabled:opacity-50 text-sm"
+          >
+            Назад
+          </button>
+          <span className="text-slate-500 text-sm py-1">{offset + 1}–{Math.min(offset + LOGS_PAGE_SIZE, total)} из {total}</span>
+          <button
+            type="button"
+            disabled={offset + LOGS_PAGE_SIZE >= total || loading}
+            onClick={() => fetchLogs(offset + LOGS_PAGE_SIZE)}
+            className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 disabled:opacity-50 text-sm"
+          >
+            Вперёд
+          </button>
+        </div>
+      )}
+    </section>
+  );
+};
+
+const FilesView = ({ enabled, chatList }) => {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('');
+  const [chatId, setChatId] = useState('');
+  const [offset, setOffset] = useState(0);
+
+  const fetchFiles = useCallback(async (off = 0) => {
+    if (!enabled) return;
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: String(FILES_PAGE_SIZE), offset: String(off) });
+      if (query.trim()) params.set('q', query.trim());
+      if (status) params.set('status', status);
+      if (chatId) params.set('chat_id', chatId);
+      const res = await fetch(`/api/files?${params}`);
+      const data = await res.json();
+      setItems(data.items || []);
+      setTotal(data.total || 0);
+      setOffset(off);
+    } finally {
+      setLoading(false);
+    }
+  }, [enabled, query, status, chatId]);
+
+  useEffect(() => {
+    fetchFiles(0);
+  }, [fetchFiles]);
+
+  const formatDate = (d) => {
+    if (!d) return '';
+    try { return new Date(d).toLocaleString(); } catch { return String(d); }
+  };
+  const formatSize = (n) => {
+    if (n == null || n === 0) return '—';
+    if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+    if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${n} B`;
+  };
+
+  if (!enabled) {
+    return (
+      <section className="glass-card p-6">
+        <h3 className="card-title text-white"><FolderOpen size={18} className="text-emerald-400" /> Файлы</h3>
+        <p className="text-slate-400 mt-4">Включите ClickHouse в config.yaml для просмотра файлов загрузки.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="glass-card p-6">
+      <h3 className="card-title text-white"><FolderOpen size={18} className="text-emerald-400" /> Файлы (путь и статус)</h3>
+      <div className="mt-4 flex flex-wrap gap-2 items-center">
+        <Search size={14} className="text-slate-500" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Поиск по имени или пути…"
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 w-48 md:w-64"
+        />
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+        >
+          <option value="">Все статусы</option>
+          <option value="downloaded">downloaded</option>
+          <option value="failed">failed</option>
+          <option value="skipped">skipped</option>
+        </select>
+        <select
+          value={chatId}
+          onChange={(e) => setChatId(e.target.value)}
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 max-w-[200px]"
+        >
+          <option value="">Все чаты</option>
+          {(chatList || []).map((c) => (
+            <option key={c.chat_id} value={String(c.chat_id)}>{c.title || c.chat_id}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => fetchFiles(0)}
+          className="px-3 py-1.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 text-sm"
+        >
+          Обновить
+        </button>
+      </div>
+      <p className="text-xs text-slate-500 mt-2">{total} файлов</p>
+      <div className="mt-4 overflow-x-auto max-h-[60vh] overflow-y-auto border border-slate-700/50 rounded-lg">
+        {loading && items.length === 0 ? (
+          <p className="p-4 text-slate-400">Загрузка…</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-slate-800/80 sticky top-0">
+              <tr>
+                <th className="text-left p-2 text-slate-400 font-medium">Чат</th>
+                <th className="text-left p-2 text-slate-400 font-medium">Имя файла</th>
+                <th className="text-left p-2 text-slate-400 font-medium">Путь</th>
+                <th className="text-left p-2 text-slate-400 font-medium w-24">Статус</th>
+                <th className="text-left p-2 text-slate-400 font-medium w-20">Размер</th>
+                <th className="text-left p-2 text-slate-400 font-medium">Ошибка</th>
+                <th className="text-left p-2 text-slate-400 font-medium">Дата</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row, i) => (
+                <tr key={i} className="border-t border-slate-700/30 hover:bg-slate-800/40">
+                  <td className="p-2 text-slate-400 truncate max-w-[140px]" title={row.chat_title}>{row.chat_title || row.chat_id}</td>
+                  <td className="p-2 text-slate-200 truncate max-w-[180px]" title={row.file_name}>{row.file_name || '—'}</td>
+                  <td className="p-2 text-slate-400 truncate max-w-[220px] font-mono text-xs" title={row.file_path}>{row.file_path || '—'}</td>
+                  <td className="p-2">
+                    <span className={`font-mono text-xs ${
+                      row.status === 'downloaded' ? 'text-emerald-400' : row.status === 'failed' ? 'text-rose-400' : 'text-slate-400'
+                    }`}>{row.status}</span>
+                  </td>
+                  <td className="p-2 text-slate-500">{formatSize(row.file_size)}</td>
+                  <td className="p-2 text-rose-300/90 text-xs truncate max-w-[160px]" title={row.error_message}>{row.error_message || '—'}</td>
+                  <td className="p-2 text-slate-500 whitespace-nowrap">{formatDate(row.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {total > FILES_PAGE_SIZE && (
+        <div className="mt-2 flex gap-2">
+          <button
+            type="button"
+            disabled={offset <= 0 || loading}
+            onClick={() => fetchFiles(Math.max(0, offset - FILES_PAGE_SIZE))}
+            className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 disabled:opacity-50 text-sm"
+          >
+            Назад
+          </button>
+          <span className="text-slate-500 text-sm py-1">{offset + 1}–{Math.min(offset + FILES_PAGE_SIZE, total)} из {total}</span>
+          <button
+            type="button"
+            disabled={offset + FILES_PAGE_SIZE >= total || loading}
+            onClick={() => fetchFiles(offset + FILES_PAGE_SIZE)}
+            className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 disabled:opacity-50 text-sm"
+          >
+            Вперёд
+          </button>
+        </div>
+      )}
+    </section>
+  );
+};
+
+const TABS = [
+  { id: 'progress', label: 'Прогресс', icon: Zap },
+  { id: 'logs', label: 'Логи', icon: FileText },
+  { id: 'files', label: 'Файлы', icon: FolderOpen },
+];
+
 const Dashboard = () => {
+  const [activeTab, setActiveTab] = useState('progress');
   const [progress, setProgress] = useState({
     overall: { total: 0, completed: 0, status: "Idle", speed: 0 },
     chats: {},
@@ -386,6 +681,34 @@ const Dashboard = () => {
         </div>
       </header>
 
+      {/* Tabs */}
+      <nav className="flex gap-1 p-1 rounded-xl bg-slate-800/50 border border-slate-700/50 w-fit">
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setActiveTab(id)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              activeTab === id
+                ? 'bg-slate-700 text-white shadow'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
+            }`}
+          >
+            <Icon size={16} />
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {activeTab === 'logs' && (
+        <LogsView enabled={stats?.enabled && stats?.connected} />
+      )}
+      {activeTab === 'files' && (
+        <FilesView enabled={stats?.enabled && stats?.connected} chatList={stats?.chats || []} />
+      )}
+
+      {activeTab === 'progress' && (
+        <>
       {/* Hero Progress Section */}
       <motion.section
         initial={{ opacity: 0, y: 20 }}
@@ -553,6 +876,8 @@ const Dashboard = () => {
         </div>
 
       </div>
+        </>
+      )}
 
       <footer className="text-center text-slate-500 text-[10px] uppercase tracking-widest font-bold pb-4">
         Telegram Media Downloader © 2026 • Premium Analytics Edition

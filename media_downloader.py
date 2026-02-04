@@ -103,8 +103,20 @@ async def main_async(args: argparse.Namespace):
         config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
         config_manager.save()
 
+        # Один экземпляр ClickHouse для логов и загрузчика (логи пишем в БД)
+        clickhouse_db = None
+        if config.get("clickhouse", {}).get("enabled"):
+            from utils.clickhouse_db import ClickHouseMetadataDB
+            from utils.log import ClickHouseLogHandler
+            clickhouse_db = ClickHouseMetadataDB(config["clickhouse"])
+            if clickhouse_db.enabled:
+                root_logger = logging.getLogger()
+                handler = ClickHouseLogHandler(clickhouse_db)
+                handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+                root_logger.addHandler(handler)
+
         # Загрузить для каждого выбранного чата
-        download_manager = DownloadManager(config_manager)
+        download_manager = DownloadManager(config_manager, clickhouse_db=clickhouse_db)
         pagination_limit = config.get("download_settings", {}).get("pagination_limit", 100)
 
         # Очередь загрузки: берём из конфига (с учётом order), чтобы порядок был стабильным и редактируемым
@@ -143,7 +155,9 @@ async def main_async(args: argparse.Namespace):
             await downloader_task
 
     finally:
-        if 'download_manager' in locals():
+        if "clickhouse_db" in locals() and clickhouse_db is not None and getattr(clickhouse_db, "enabled", False):
+            await clickhouse_db.flush_logs()
+        if "download_manager" in locals():
             download_manager.close()
         await session_manager.stop()
 
@@ -160,10 +174,11 @@ def main():
     # Обработка сигналов для корректного завершения
     import signal
     def stop_loop():
-        # Пытаемся корректно остановить задачи
         for task in asyncio.all_tasks(loop):
             task.cancel()
         logger.info("Получен сигнал прерывания, завершение работы...")
+        # Остановить цикл, иначе при зависании загрузки в I/O процесс не выйдет
+        loop.call_soon_threadsafe(loop.stop)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:

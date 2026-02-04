@@ -3,7 +3,7 @@ import asyncio
 import logging
 import os
 import shutil
-from typing import Dict, List, Optional, Tuple, Union
+from typing import AsyncIterator, Dict, List, Optional, Tuple, Union
 
 from telethon import TelegramClient
 from telethon.errors import FileMigrateError, FileReferenceExpiredError, FloodWaitError
@@ -46,7 +46,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class DownloadManager:
     """Класс для управления загрузкой медиа из Telegram."""
 
-    def __init__(self, config_manager: ConfigManager):
+    def __init__(self, config_manager: ConfigManager, clickhouse_db: Optional["ClickHouseMetadataDB"] = None):
         """
         Инициализация DownloadManager.
 
@@ -54,14 +54,20 @@ class DownloadManager:
         ----------
         config_manager: ConfigManager
             Менеджер конфигурации.
+        clickhouse_db: Optional[ClickHouseMetadataDB]
+            Опционально переданный экземпляр БД (для совместного использования с логгером).
         """
         self.config_manager = config_manager
         self.config = config_manager.config
         self.failed_ids: List[Tuple[int, int]] = []  # [(chat_id, message_id), ...]
         self.downloaded_ids: List[Tuple[int, int]] = []  # [(chat_id, message_id), ...]
         self.downloaded_files: Dict[Tuple[int, int], str] = {}  # {(chat_id, message_id): file_path}
-        # ClickHouse
-        self.clickhouse_db = ClickHouseMetadataDB(self.config.get("clickhouse", {}))
+        # ClickHouse (передан снаружи или создаём свой)
+        self.clickhouse_db = (
+            clickhouse_db
+            if clickhouse_db is not None
+            else ClickHouseMetadataDB(self.config.get("clickhouse", {}))
+        )
         # Archive Extraction
         download_settings = self.config.get("download_settings", {})
         self.archive_handler = ArchiveHandler(download_settings.get("archive_settings", {}))
@@ -394,6 +400,30 @@ class DownloadManager:
 
         return filename
 
+    def _get_file_display_name_from_message(self, message: Message) -> str:
+        """Короткое имя файла из сообщения для логов/БД."""
+        media = getattr(message, "document", None) or getattr(message, "photo", None)
+        if media and hasattr(media, "attributes"):
+            for attr in media.attributes:
+                if hasattr(attr, "file_name"):
+                    return getattr(attr, "file_name", "") or ""
+        return f"msg_{message.id}"
+
+    def _record_failed(self, chat_id: int, message: Message, error_message: str = "") -> None:
+        """Добавить сообщение в failed_ids и записать в ClickHouse file_downloads."""
+        self.failed_ids.append((chat_id, message.id))
+        if self.clickhouse_db.enabled:
+            self.clickhouse_db.save_file_download(
+                chat_id,
+                message.id,
+                "failed",
+                chat_title=str(self.config.get("chat_title", "")),
+                file_name=self._get_file_display_name_from_message(message),
+                file_path="",
+                file_size=0,
+                error_message=(error_message or "")[:2048],
+            )
+
     def _get_file_size(self, message: Message) -> int:
         """Получить размер файла сообщения."""
         if not message.media:
@@ -411,6 +441,41 @@ class DownloadManager:
         elif isinstance(message.media, MessageMediaDocument):
             return message.media.document.size
         return 0
+
+    async def _iter_download_chunks(
+        self,
+        client: TelegramClient,
+        media: Union[MessageMediaDocument, MessageMediaPhoto],
+        offset: int,
+        request_size: int,
+        message_id: int,
+    ) -> AsyncIterator[bytes]:
+        """
+        Итератор по чанкам загрузки с таймаутом на каждый чанк.
+
+        При отсутствии данных дольше download_chunk_timeout выбрасывает TimeoutError,
+        что даёт возможность выйти из зависшей загрузки и быстрее реагировать на Ctrl+C.
+        """
+        chunk_timeout = self.config.get("download_settings", {}).get(
+            "download_chunk_timeout", 300
+        )
+        it = client.iter_download(media, offset=offset, request_size=request_size)
+        while True:
+            try:
+                chunk = await asyncio.wait_for(anext(it), timeout=chunk_timeout)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Загрузка сообщения %s зависла: нет данных более %s сек "
+                    "(download_chunk_timeout). Возможные причины: сеть, ограничения Telegram, прокси.",
+                    message_id,
+                    chunk_timeout,
+                )
+                raise TimeoutError(
+                    f"Download stalled for message {message_id} (no data for {chunk_timeout}s)"
+                ) from None
+            yield chunk
 
     async def _get_media_meta(
         self,
@@ -644,10 +709,12 @@ class DownloadManager:
                                     web_description=web_description,
                                 )
                                 with open(part_file, mode) as f:
-                                    async for chunk in client.iter_download(
+                                    async for chunk in self._iter_download_chunks(
+                                        client,
                                         message.media,
-                                        offset=current_size,
-                                        request_size=1024 * 1024
+                                        current_size,
+                                        1024 * 1024,
+                                        message.id,
                                     ):
                                         f.write(chunk)
                                         current_size += len(chunk)
@@ -672,10 +739,12 @@ class DownloadManager:
                                         web_description=web_description,
                                     )
                                     with open(part_file, mode) as f:
-                                        async for chunk in client.iter_download(
+                                        async for chunk in self._iter_download_chunks(
+                                            client,
                                             message.media,
-                                            offset=current_size,
-                                            request_size=1024 * 1024
+                                            current_size,
+                                            1024 * 1024,
+                                            message.id,
                                         ):
                                             f.write(chunk)
                                             current_size += len(chunk)
@@ -797,7 +866,7 @@ class DownloadManager:
                                 )
                                 if os.path.exists(download_path):
                                     os.remove(download_path)
-                                self.failed_ids.append((chat_id, message.id))
+                                self._record_failed(chat_id, message, "validation_failed")
                                 break
 
                             # Распаковка если это архив (теперь async)
@@ -807,6 +876,16 @@ class DownloadManager:
                         logger.debug("Успешно загружено сообщение %s", message.id)
                         self.downloaded_files[(chat_id, message.id)] = download_path
                         self.downloaded_ids.append((chat_id, message.id))
+                        if self.clickhouse_db.enabled:
+                            self.clickhouse_db.save_file_download(
+                                chat_id,
+                                message.id,
+                                "downloaded",
+                                chat_title=str(self.config.get("chat_title", "")),
+                                file_name=display_name,
+                                file_path=download_path,
+                                file_size=file_size or 0,
+                            )
 
                         # Скрыть task после завершения загрузки
                         if progress and own_task_id is not None:
@@ -822,11 +901,10 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_reference_expired_skip", id=message.id)
                     )
-                    # Использовать chat_id из конфига для консистентности
                     chat_id = self.config.get("chat_id", 0)
                     if chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self.failed_ids.append((chat_id, message.id))
+                    self._record_failed(chat_id, message, "file_reference_expired")
             except FloodWaitError as e:
                 logger.warning(
                     self.i18n.t("flood_wait_error", id=message.id, seconds=e.seconds)
@@ -841,11 +919,10 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("timeout_skip", id=message.id)
                     )
-                    # Использовать chat_id из конфига для консистентности
                     chat_id = self.config.get("chat_id", 0)
                     if chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self.failed_ids.append((chat_id, message.id))
+                    self._record_failed(chat_id, message, "timeout")
             except FileMigrateError as e:
                 # Файл в другом DC, переключение может занять время
                 dc_num = getattr(e, "new_dc", "?")
@@ -858,11 +935,10 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_migrate_error_skip", id=message.id, dc=dc_num)
                     )
-                    # Использовать chat_id из конфига для консистентности
                     chat_id = self.config.get("chat_id", 0)
                     if chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self.failed_ids.append((chat_id, message.id))
+                    self._record_failed(chat_id, message, f"file_migrate dc={dc_num}")
             except (asyncio.IncompleteReadError, ConnectionError, OSError) as e:
                 # Обрыв соединения при переключении DC или сетевые проблемы
                 error_str = str(e)
@@ -876,11 +952,10 @@ class DownloadManager:
                         logger.error(
                             self.i18n.t("connection_error_skip", id=message.id, error=error_str)
                         )
-                        # Использовать chat_id из конфига для консистентности
                         chat_id = self.config.get("chat_id", 0)
                         if chat_id == 0:
                             chat_id = message.chat.id if message.chat else 0
-                        self.failed_ids.append((chat_id, message.id))
+                        self._record_failed(chat_id, message, error_str)
                 else:
                     # Другие OSError/ConnectionError - пробрасываем в общий Exception handler
                     raise
@@ -909,7 +984,7 @@ class DownloadManager:
                         pass
                     await asyncio.sleep(2)
                 else:
-                    self.failed_ids.append((chat_id, message.id))
+                    self._record_failed(chat_id, message, str(e))
                     break
         return message.id
 
@@ -1442,8 +1517,9 @@ class DownloadManager:
                     chat_id,
                 )
 
-                # Временно установить chat_id для этого чата
+                # Временно установить chat_id и chat_title для этого чата (логи/БД)
                 self.config["chat_id"] = chat_id
+                self.config["chat_title"] = chat_title or ""
 
                 try:
                     if self.web_app:

@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -201,6 +201,47 @@ async def get_stats():
         elif "connect" in lower or "connection refused" in lower or "timed out" in lower:
             error_type = "connection"
         return {"enabled": True, "connected": False, "error": msg, "error_type": error_type, "chats": [], "history": []}
+
+
+@app.get("/api/logs")
+async def get_logs(
+    q: Optional[str] = Query(None),
+    level: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Логи приложения из ClickHouse с поиском по тексту и фильтром по уровню."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        return {"items": [], "total": 0}
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    items, total = db.get_logs(q=q, level=level, limit=limit, offset=offset)
+    return {"items": items, "total": total}
+
+
+@app.get("/api/files")
+async def get_files(
+    chat_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Список файлов загрузки (путь, статус) с поиском и фильтрами."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        return {"items": [], "total": 0}
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    items, total = db.get_files(chat_id=chat_id, status=status, q=q, limit=limit, offset=offset)
+    return {"items": items, "total": total}
 
 
 @app.get("/api/chat/{chat_id}/messages")
