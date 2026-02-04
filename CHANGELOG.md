@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `_iter_download_chunks()` в `core/downloader.py`: обёртка над `iter_download` с `asyncio.wait_for(anext(...), timeout)` — задача периодически «просыпается», Ctrl+C обрабатывается быстрее
   - В логе при зависании: «Загрузка сообщения X зависла: нет данных более N сек (download_chunk_timeout)»
   - В обработчике SIGINT добавлен `loop.call_soon_threadsafe(loop.stop)` для выхода при зависшей загрузке
+- **Опция --config в cleanup_orphaned_files.py**
+  - Чтение `base_directory` и `history_directory` из config.yaml при указании `--config PATH`
+  - Относительный `base_directory` из конфига разрешается относительно каталога конфига
+  - Вместо обязательного `--base-directory` можно указать только `--config config.yaml`
 - **ClickHouse как основной источник истории** (ветка feature/clickhouse-primary-source)
   - Поддержка чтения/записи истории из ClickHouse в `utils/history.py`, `utils/history_saver.py`
   - Опция `clickhouse.primary_source`: при включении проверка дублей и выгрузка — по ClickHouse

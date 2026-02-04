@@ -301,13 +301,17 @@ def main() -> int:
     )
     parser.add_argument(
         "--base-directory",
-        required=True,
-        help="Базовая директория (download_settings.base_directory, где лежит history/)",
+        help="Базовая директория (download_settings.base_directory). Обязателен, если не задан --config.",
     )
     parser.add_argument(
         "--history-directory",
         default="history",
         help="Имя папки истории внутри base-directory (default: history)",
+    )
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help="Путь к config.yaml: base_directory и history_directory берутся из конфига",
     )
     parser.add_argument(
         "--dry-run",
@@ -333,6 +337,35 @@ def main() -> int:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # Определить base_directory: из --config или --base-directory
+    base_directory = args.base_directory
+    history_directory = args.history_directory
+    if args.config:
+        try:
+            from utils.config import ConfigManager
+            config_path = os.path.abspath(args.config)
+            if not os.path.exists(config_path):
+                logger.error("Файл конфига не найден: %s", config_path)
+                return 1
+            manager = ConfigManager(config_path=config_path)
+            config = manager.load()
+            ds = config.get("download_settings") or {}
+            base_directory = (ds.get("base_directory") or "").strip()
+            history_directory = ds.get("history_directory", "history")
+            if base_directory and not os.path.isabs(base_directory):
+                config_dir = os.path.dirname(config_path)
+                base_directory = os.path.abspath(os.path.join(config_dir, base_directory))
+            elif base_directory:
+                base_directory = os.path.abspath(base_directory)
+            if not base_directory or not os.path.exists(base_directory):
+                logger.error("В конфиге download_settings.base_directory не задан или директория не существует")
+                return 1
+        except Exception as e:
+            logger.error("Ошибка чтения конфига %s: %s", args.config, e)
+            return 1
+    if not base_directory:
+        parser.error("Укажите --base-directory или --config")
+
     # Определить режим работы
     dry_run = not args.force
     if not dry_run:
@@ -340,8 +373,8 @@ def main() -> int:
 
     try:
         result = cleanup_orphaned_files(
-            base_directory=args.base_directory,
-            history_directory=args.history_directory,
+            base_directory=base_directory,
+            history_directory=history_directory,
             dry_run=dry_run,
         )
 
