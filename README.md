@@ -209,8 +209,23 @@ python3 media_downloader.py
 Запустите программу с флагом `--web` для активации современного дашборда:
 
 ```sh
+# Один раз собрать фронтенд (при первом запуске или после изменений в web/ui)
+cd web/ui && npm install && npm run build && cd ../..
+
 python3 media_downloader.py --web
 ```
+
+**Требования к Node.js для сборки фронтенда:** Vite требует Node.js **20.19+** или **22.12+**. Если при `npm run build` появляется предупреждение о версии Node.js:
+
+- **Fedora/RHEL:** `sudo dnf install nodejs` (часто даёт актуальную LTS) или [NodeSource](https://github.com/nodesource/distributions).
+- **Ubuntu/Debian:** обновите через [NodeSource](https://github.com/nodesource/distributions) или установите [nvm](https://github.com/nvm-sh/nvm): `nvm install 22 && nvm use 22`.
+- **Windows:** скачайте установщик с [nodejs.org](https://nodejs.org/) (LTS 22.x) или установите nvm-windows.
+- **Проверка версии:** `node -v` (должно быть v20.19+ или v22.12+).
+
+**После обновления через dnf всё ещё старая версия?** Команда `node -v` показывает то, что первое в PATH. Выполните `which node`:
+- Если путь вида `~/.nvm/...` или `~/.fnm/...` — используется Node из nvm/fnm, а не системный. Переключитесь на 22: `nvm use 22` или `fnm use 22`, либо временно отключите nvm в этой сессии и используйте системный: `PATH="/usr/bin:$PATH" node -v`.
+- Если `which node` — `/usr/bin/node`, а версия старая: проверьте `alternatives` — `sudo alternatives --config node` и выберите вариант с 22.x.
+- Для сборки можно явно вызвать системный Node: `PATH="/usr/bin:$PATH" npm run build` в каталоге `web/ui`.
 
 После запуска откройте `http://localhost:8000` в браузере. Вы увидите:
 - Живой прогресс всех активных загрузок
