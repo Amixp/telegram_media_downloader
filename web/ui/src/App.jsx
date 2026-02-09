@@ -32,6 +32,39 @@ const PAGE_SIZE = 100;
 const MAX_IN_MEMORY = 500;
 const LOGS_PAGE_SIZE = 100;
 const FILES_PAGE_SIZE = 50;
+const LOGS_DEBOUNCE_MS = 400;
+
+// Индикатор загрузки — «ромашка» с переменными лепестками (пульсирующие точки по кругу)
+const FlowerLoader = ({ size = 28, className = '', color = 'amber' }) => {
+  const colorClass = color === 'emerald' ? 'bg-emerald-400' : 'bg-amber-400';
+  return (
+  <div
+    className={`relative inline-flex items-center justify-center ${className}`}
+    style={{ width: size, height: size }}
+  >
+    {[...Array(8)].map((_, i) => (
+      <motion.span
+        key={i}
+        className={`absolute rounded-full ${colorClass}`}
+        style={{
+          width: size * 0.2,
+          height: size * 0.2,
+          top: '50%',
+          left: '50%',
+          transformOrigin: 'center center',
+          transform: `rotate(${i * 45}deg) translateY(-${size * 0.45}px)`,
+        }}
+        animate={{ opacity: [0.2, 1, 0.2], scale: [0.8, 1.1, 0.8] }}
+        transition={{
+          duration: 0.9,
+          repeat: Infinity,
+          delay: i * 0.1,
+        }}
+      />
+    ))}
+  </div>
+  );
+};
 
 const ChatViewer = ({ chatId, title, onClose }) => {
   const [items, setItems] = useState([]);
@@ -234,6 +267,16 @@ const ChatViewer = ({ chatId, title, onClose }) => {
   );
 };
 
+// Debounce для поиска/фильтра — уменьшает число запросов при вводе
+const useDebounce = (value, delay) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debouncedValue;
+};
+
 const LogsView = ({ enabled }) => {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
@@ -241,27 +284,46 @@ const LogsView = ({ enabled }) => {
   const [query, setQuery] = useState('');
   const [level, setLevel] = useState('');
   const [offset, setOffset] = useState(0);
+  const debouncedQuery = useDebounce(query, LOGS_DEBOUNCE_MS);
+  const debouncedLevel = useDebounce(level, LOGS_DEBOUNCE_MS);
+  const abortRef = useRef(null);
 
-  const fetchLogs = useCallback(async (off = 0) => {
+  const fetchLogs = useCallback(async (off = 0, opts = {}) => {
     if (!enabled) return;
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
+    const q = opts.q ?? debouncedQuery;
+    const lvl = opts.level ?? debouncedLevel;
+
     setLoading(true);
     try {
       const params = new URLSearchParams({ limit: String(LOGS_PAGE_SIZE), offset: String(off) });
-      if (query.trim()) params.set('q', query.trim());
-      if (level) params.set('level', level);
-      const res = await fetch(`/api/logs?${params}`);
+      if (String(q || '').trim()) params.set('q', String(q).trim());
+      if (lvl) params.set('level', lvl);
+      const res = await fetch(`/api/logs?${params}`, { signal });
       const data = await res.json();
+      if (signal.aborted) return;
       setItems(data.items || []);
       setTotal(data.total || 0);
       setOffset(off);
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      console.error('Logs fetch error:', err);
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
-  }, [enabled, query, level]);
+  }, [enabled, debouncedQuery, debouncedLevel]);
 
+  // Автообновление при смене debounced поиска/фильтра
   useEffect(() => {
+    if (!enabled) return;
     fetchLogs(0);
-  }, [fetchLogs]);
+  }, [enabled, debouncedQuery, debouncedLevel, fetchLogs]);
+
+  const handleRefresh = useCallback(() => {
+    fetchLogs(0, { q: query, level });
+  }, [fetchLogs, query, level]);
 
   const formatTs = (ts) => {
     if (!ts) return '';
@@ -281,18 +343,20 @@ const LogsView = ({ enabled }) => {
     <section className="glass-card p-6">
       <h3 className="card-title text-white"><FileText size={18} className="text-amber-400" /> Логи</h3>
       <div className="mt-4 flex flex-wrap gap-2 items-center">
-        <Search size={14} className="text-slate-500" />
+        <Search size={14} className="text-slate-500 shrink-0" />
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Поиск по тексту лога…"
-          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50 w-48 md:w-64"
+          disabled={loading}
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50 w-48 md:w-64 disabled:opacity-60 disabled:cursor-not-allowed"
         />
         <select
           value={level}
           onChange={(e) => setLevel(e.target.value)}
-          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-amber-500/50"
+          disabled={loading}
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-amber-500/50 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <option value="">Все уровни</option>
           <option value="DEBUG">DEBUG</option>
@@ -302,16 +366,24 @@ const LogsView = ({ enabled }) => {
         </select>
         <button
           type="button"
-          onClick={() => fetchLogs(0)}
-          className="px-3 py-1.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 text-sm"
+          onClick={handleRefresh}
+          disabled={loading}
+          className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 disabled:opacity-60 disabled:cursor-not-allowed text-sm"
         >
+          {loading ? <FlowerLoader size={18} /> : null}
           Обновить
         </button>
       </div>
-      <p className="text-xs text-slate-500 mt-2">{total} записей</p>
-      <div className="mt-4 overflow-x-auto max-h-[60vh] overflow-y-auto border border-slate-700/50 rounded-lg">
+      <p className="text-xs text-slate-500 mt-2 flex items-center gap-2">
+        {loading ? <FlowerLoader size={14} /> : null}
+        {total} записей
+      </p>
+      <div className="mt-4 overflow-x-auto max-h-[60vh] overflow-y-auto border border-slate-700/50 rounded-lg relative">
         {loading && items.length === 0 ? (
-          <p className="p-4 text-slate-400">Загрузка…</p>
+          <div className="p-8 flex flex-col items-center justify-center gap-3 text-slate-400">
+            <FlowerLoader size={40} />
+            <span>Загрузка логов…</span>
+          </div>
         ) : (
           <table className="w-full text-sm">
             <thead className="bg-slate-800/80 sticky top-0">
@@ -364,6 +436,8 @@ const LogsView = ({ enabled }) => {
   );
 };
 
+const FILES_DEBOUNCE_MS = 400;
+
 const FilesView = ({ enabled, chatList }) => {
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
@@ -372,28 +446,48 @@ const FilesView = ({ enabled, chatList }) => {
   const [status, setStatus] = useState('');
   const [chatId, setChatId] = useState('');
   const [offset, setOffset] = useState(0);
+  const debouncedQuery = useDebounce(query, FILES_DEBOUNCE_MS);
+  const debouncedStatus = useDebounce(status, 150);
+  const debouncedChatId = useDebounce(chatId, 150);
+  const abortRef = useRef(null);
 
-  const fetchFiles = useCallback(async (off = 0) => {
+  const fetchFiles = useCallback(async (off = 0, opts = {}) => {
     if (!enabled) return;
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
+    const q = opts.q ?? debouncedQuery;
+    const st = opts.status ?? debouncedStatus;
+    const cid = opts.chatId ?? debouncedChatId;
+
     setLoading(true);
     try {
       const params = new URLSearchParams({ limit: String(FILES_PAGE_SIZE), offset: String(off) });
-      if (query.trim()) params.set('q', query.trim());
-      if (status) params.set('status', status);
-      if (chatId) params.set('chat_id', chatId);
-      const res = await fetch(`/api/files?${params}`);
+      if (String(q || '').trim()) params.set('q', String(q).trim());
+      if (st) params.set('status', st);
+      if (cid) params.set('chat_id', cid);
+      const res = await fetch(`/api/files?${params}`, { signal });
       const data = await res.json();
+      if (signal.aborted) return;
       setItems(data.items || []);
       setTotal(data.total || 0);
       setOffset(off);
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      console.error('Files fetch error:', err);
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
-  }, [enabled, query, status, chatId]);
+  }, [enabled, debouncedQuery, debouncedStatus, debouncedChatId]);
 
   useEffect(() => {
+    if (!enabled) return;
     fetchFiles(0);
-  }, [fetchFiles]);
+  }, [enabled, debouncedQuery, debouncedStatus, debouncedChatId, fetchFiles]);
+
+  const handleRefresh = useCallback(() => {
+    fetchFiles(0, { q: query, status, chatId });
+  }, [fetchFiles, query, status, chatId]);
 
   const formatDate = (d) => {
     if (!d) return '';
@@ -420,18 +514,20 @@ const FilesView = ({ enabled, chatList }) => {
     <section className="glass-card p-6">
       <h3 className="card-title text-white"><FolderOpen size={18} className="text-emerald-400" /> Файлы (путь и статус)</h3>
       <div className="mt-4 flex flex-wrap gap-2 items-center">
-        <Search size={14} className="text-slate-500" />
+        <Search size={14} className="text-slate-500 shrink-0" />
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Поиск по имени или пути…"
-          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 w-48 md:w-64"
+          disabled={loading}
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 w-48 md:w-64 disabled:opacity-60 disabled:cursor-not-allowed"
         />
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+          disabled={loading}
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <option value="">Все статусы</option>
           <option value="downloaded">downloaded</option>
@@ -441,7 +537,8 @@ const FilesView = ({ enabled, chatList }) => {
         <select
           value={chatId}
           onChange={(e) => setChatId(e.target.value)}
-          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 max-w-[200px]"
+          disabled={loading}
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 max-w-[200px] disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <option value="">Все чаты</option>
           {(chatList || []).map((c) => (
@@ -450,16 +547,24 @@ const FilesView = ({ enabled, chatList }) => {
         </select>
         <button
           type="button"
-          onClick={() => fetchFiles(0)}
-          className="px-3 py-1.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 text-sm"
+          onClick={handleRefresh}
+          disabled={loading}
+          className="flex items-center gap-2 px-3 py-1.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 disabled:opacity-60 disabled:cursor-not-allowed text-sm"
         >
+          {loading ? <FlowerLoader size={18} color="emerald" /> : null}
           Обновить
         </button>
       </div>
-      <p className="text-xs text-slate-500 mt-2">{total} файлов</p>
+      <p className="text-xs text-slate-500 mt-2 flex items-center gap-2">
+        {loading ? <FlowerLoader size={14} color="emerald" /> : null}
+        {total} файлов
+      </p>
       <div className="mt-4 overflow-x-auto max-h-[60vh] overflow-y-auto border border-slate-700/50 rounded-lg">
         {loading && items.length === 0 ? (
-          <p className="p-4 text-slate-400">Загрузка…</p>
+          <div className="p-8 flex flex-col items-center justify-center gap-3 text-slate-400">
+            <FlowerLoader size={40} color="emerald" />
+            <span>Загрузка файлов…</span>
+          </div>
         ) : (
           <table className="w-full text-sm">
             <thead className="bg-slate-800/80 sticky top-0">

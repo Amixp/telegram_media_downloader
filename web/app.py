@@ -160,6 +160,30 @@ async def update_download(task_id: Any, description: str = None, total: int = No
 async def get_status():
     return PROGRESS_STATE
 
+def _fetch_stats_sync(db) -> dict:
+    """Синхронное получение статистики — выполняется в executor, чтобы не блокировать event loop."""
+    client = db._get_client()
+    chats_data = client.execute("""
+        SELECT chat_id, any(chat_title) AS title, count() AS message_count, sum(file_size) AS total_size
+        FROM messages
+        GROUP BY chat_id
+        ORDER BY message_count DESC
+    """)
+    history_data = client.execute("""
+        SELECT toDate(date) as d, count() as c
+        FROM messages
+        WHERE date > subtractDays(now(), 30)
+        GROUP BY d ORDER BY d
+    """)
+    return {
+        "chats": [
+            {"chat_id": r[0], "title": (r[1] or "").strip() or f"Chat {r[0]}", "count": r[2], "size": r[3] or 0}
+            for r in chats_data
+        ],
+        "history": [{"date": str(r[0]), "count": r[1]} for r in history_data],
+    }
+
+
 @app.get("/api/stats")
 async def get_stats():
     """Получить статистику из ClickHouse."""
@@ -171,35 +195,10 @@ async def get_stats():
 
     from utils.clickhouse_db import ClickHouseMetadataDB
     db = ClickHouseMetadataDB(ch_config)
-    client = db._get_client()
-
+    loop = asyncio.get_event_loop()
     try:
-        # Статистика по чатам — агрегация из messages (реальные данные), не из таблицы chats
-        chats_data = client.execute("""
-            SELECT chat_id, any(chat_title) AS title, count() AS message_count, sum(file_size) AS total_size
-            FROM messages
-            GROUP BY chat_id
-            ORDER BY message_count DESC
-        """)
-        # Статистика по дням (последние 30 дней)
-        history_data = client.execute("""
-            SELECT toDate(date) as d, count() as c
-            FROM messages
-            WHERE date > subtractDays(now(), 30)
-            GROUP BY d ORDER BY d
-        """)
-
-        def _chat_row(r):
-            cid, title, cnt, size = r[0], r[1], r[2], r[3]
-            name = (title or "").strip() or f"Chat {cid}"
-            return {"chat_id": cid, "title": name, "count": cnt, "size": size or 0}
-
-        return {
-            "enabled": True,
-            "connected": True,
-            "chats": [_chat_row(r) for r in chats_data],
-            "history": [{"date": str(r[0]), "count": r[1]} for r in history_data]
-        }
+        data = await loop.run_in_executor(None, _fetch_stats_sync, db)
+        return {"enabled": True, "connected": True, **data}
     except Exception as e:
         msg = str(e)
         error_type = "unknown"
@@ -227,7 +226,11 @@ async def get_logs(
 
     from utils.clickhouse_db import ClickHouseMetadataDB
     db = ClickHouseMetadataDB(ch_config)
-    items, total = db.get_logs(q=q, level=level, limit=limit, offset=offset)
+    loop = asyncio.get_event_loop()
+    items, total = await loop.run_in_executor(
+        None,
+        lambda: db.get_logs(q=q, level=level, limit=limit, offset=offset),
+    )
     return {"items": items, "total": total}
 
 
@@ -248,7 +251,11 @@ async def get_files(
 
     from utils.clickhouse_db import ClickHouseMetadataDB
     db = ClickHouseMetadataDB(ch_config)
-    items, total = db.get_files(chat_id=chat_id, status=status, q=q, limit=limit, offset=offset)
+    loop = asyncio.get_event_loop()
+    items, total = await loop.run_in_executor(
+        None,
+        lambda: db.get_files(chat_id=chat_id, status=status, q=q, limit=limit, offset=offset),
+    )
     return {"items": items, "total": total}
 
 
@@ -267,7 +274,11 @@ async def get_chat_messages(
 
     from utils.clickhouse_db import ClickHouseMetadataDB
     db = ClickHouseMetadataDB(ch_config)
-    messages, total = db.get_messages_page(chat_id, offset=offset, limit=limit)
+    loop = asyncio.get_event_loop()
+    messages, total = await loop.run_in_executor(
+        None,
+        lambda: db.get_messages_page(chat_id, offset=offset, limit=limit),
+    )
     return {"messages": messages, "total": total}
 
 
