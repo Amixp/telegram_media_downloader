@@ -1,7 +1,8 @@
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
-    container_name: clickhouse-server
+    container_name: clickhouse-tgd-server
+    restart: unless-stopped
     ports:
       - "8123:8123"
       - "9000:9000"
