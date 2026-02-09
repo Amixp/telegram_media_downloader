@@ -59,6 +59,13 @@ class ClickHouseMetadataDB:
             self._init_db()
         return self._client
 
+    def check_connection(self) -> None:
+        """Проверить доступ к БД. При недоступности выбрасывает исключение."""
+        if not self.enabled:
+            return
+        client = self._get_client()
+        client.execute("SELECT 1")
+
     def _init_db(self):
         """Инициализация схемы БД."""
         client = self._client

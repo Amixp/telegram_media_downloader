@@ -110,10 +110,23 @@ async def main_async(args: argparse.Namespace):
             from utils.log import ClickHouseLogHandler
             clickhouse_db = ClickHouseMetadataDB(config["clickhouse"])
             if clickhouse_db.enabled:
-                root_logger = logging.getLogger()
-                handler = ClickHouseLogHandler(clickhouse_db)
-                handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-                root_logger.addHandler(handler)
+                if config.get("clickhouse", {}).get("primary_source"):
+                    try:
+                        clickhouse_db.check_connection()
+                    except Exception as e:
+                        logger.warning("Нет доступа к ClickHouse (primary_source=true): %s. Операции с БД отключены.", e)
+                        clickhouse_db.enabled = False
+                        if getattr(clickhouse_db, "_client", None) is not None:
+                            try:
+                                clickhouse_db._client.disconnect()
+                            except Exception:
+                                pass
+                            clickhouse_db._client = None
+                if clickhouse_db.enabled:
+                    root_logger = logging.getLogger()
+                    handler = ClickHouseLogHandler(clickhouse_db)
+                    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+                    root_logger.addHandler(handler)
 
         # Загрузить для каждого выбранного чата
         download_manager = DownloadManager(config_manager, clickhouse_db=clickhouse_db)
