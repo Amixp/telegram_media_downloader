@@ -125,7 +125,7 @@ npm run preview
 Dashboard подключается к FastAPI бэкенду:
 
 - **WebSocket:** `ws://localhost:8000/ws/progress` — real-time обновления прогресса
-- **REST API:** `/api/stats` — статистика загрузок
+- **REST API:** `/api/stats` — статистика загрузок (список чатов с кол-вом сообщений и размером агрегируется из таблицы `messages` в ClickHouse)
 
 ## Стилевые особенности
 

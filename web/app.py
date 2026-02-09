@@ -174,10 +174,13 @@ async def get_stats():
     client = db._get_client()
 
     try:
-        # Статика по чатам (с chat_id для перехода к просмотру)
-        chats_data = client.execute(
-            "SELECT chat_id, title, message_count, total_size FROM chats FINAL ORDER BY message_count DESC"
-        )
+        # Статистика по чатам — агрегация из messages (реальные данные), не из таблицы chats
+        chats_data = client.execute("""
+            SELECT chat_id, any(chat_title) AS title, count() AS message_count, sum(file_size) AS total_size
+            FROM messages
+            GROUP BY chat_id
+            ORDER BY message_count DESC
+        """)
         # Статистика по дням (последние 30 дней)
         history_data = client.execute("""
             SELECT toDate(date) as d, count() as c
@@ -186,10 +189,15 @@ async def get_stats():
             GROUP BY d ORDER BY d
         """)
 
+        def _chat_row(r):
+            cid, title, cnt, size = r[0], r[1], r[2], r[3]
+            name = (title or "").strip() or f"Chat {cid}"
+            return {"chat_id": cid, "title": name, "count": cnt, "size": size or 0}
+
         return {
             "enabled": True,
             "connected": True,
-            "chats": [{"chat_id": r[0], "title": r[1], "count": r[2], "size": r[3]} for r in chats_data],
+            "chats": [_chat_row(r) for r in chats_data],
             "history": [{"date": str(r[0]), "count": r[1]} for r in history_data]
         }
     except Exception as e:
