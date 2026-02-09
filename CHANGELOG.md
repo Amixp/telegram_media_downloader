@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2025-02-09
+
 ### Added
 - **Фиксация версии Node.js для сборки фронтенда**
   - В `web/ui/package.json` добавлено поле `engines`: `^20.19.0 || >=22.12.0` (требование Vite 7).
