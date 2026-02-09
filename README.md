@@ -215,7 +215,7 @@ cd web/ui && npm install && npm run build && cd ../..
 python3 media_downloader.py --web
 ```
 
-**Требования к Node.js для сборки фронтенда:** Vite требует Node.js **20.19+** или **22.12+**. Если при `npm run build` появляется предупреждение о версии Node.js:
+**Требования к Node.js для сборки фронтенда:** Vite требует Node.js **20.19+** или **22.12+**. Версия задана в `web/ui/.nvmrc` (22) и в `web/ui/package.json` (поле `engines`); в каталоге `web/ui` выполните `nvm use` для переключения. Если при `npm run build` появляется предупреждение о версии Node.js:
 
 - **Fedora/RHEL:** `sudo dnf install nodejs` (часто даёт актуальную LTS) или [NodeSource](https://github.com/nodesource/distributions).
 - **Ubuntu/Debian:** обновите через [NodeSource](https://github.com/nodesource/distributions) или установите [nvm](https://github.com/nvm-sh/nvm): `nvm install 22 && nvm use 22`.

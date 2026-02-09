@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Фиксация версии Node.js для сборки фронтенда**
+  - В `web/ui/package.json` добавлено поле `engines`: `^20.19.0 || >=22.12.0` (требование Vite 7).
+  - Файл `web/ui/.nvmrc` с версией `22` для nvm/fnm: в каталоге `web/ui` достаточно выполнить `nvm use`.
+- **Проверка доступа к ClickHouse при старте (при `primary_source: true`)**
+  - При включённом `clickhouse.primary_source` при старте выполняется проверка подключения к БД (`check_connection()`).
+  - При ошибке доступа (недоступный хост, отказ соединения и т.п.) приложение не завершается: выводится предупреждение в лог, операции с БД отключаются (`enabled = False`), работа продолжается без записи/чтения в ClickHouse (источники — JSONL и локальные файлы).
+
+### Fixed
+- **Chat Statistics в веб-дашборде** — статистика (кол-во сообщений, размер) по чатам теперь считается агрегацией из таблицы `messages` в ClickHouse, а не из таблицы `chats`. Данные в блоке «Chat Statistics» соответствуют реальному содержимому БД.
+
+### Added
 - **Сохранение логов в ClickHouse и просмотр с поиском**
   - Таблица `app_logs` (ts, level, logger_name, message) в ClickHouse
   - `ClickHouseLogHandler` в `utils/log.py`: буферная запись логов в БД при включённом ClickHouse
