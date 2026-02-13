@@ -8,7 +8,8 @@ class ArchiveSettings(BaseModel):
     supported_extensions: List[str] = ["zip", "tar", "gz", "bz2", "xz"]
 
 class DownloadSettings(BaseModel):
-    max_parallel_downloads: Optional[int] = 5
+    # Один клиент = одно TCP-соединение; >2–3 параллельных загрузок часто дают обрывы (Server closed the connection).
+    max_parallel_downloads: Optional[int] = 2
     pagination_limit: int = 100
     # Максимум id в очереди повторов (ids_to_retry); при превышении старые обрезаются
     max_ids_to_retry: Optional[int] = 500

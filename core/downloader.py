@@ -946,6 +946,12 @@ class DownloadManager:
                     logger.warning(
                         self.i18n.t("connection_error", id=message.id, error=error_str)
                     )
+                    # Подсказка: уменьшение параллелизма часто устраняет повторяющиеся обрывы
+                    max_p = self.config.get("download_settings", {}).get("max_parallel_downloads", 2)
+                    if max_p is None or (isinstance(max_p, int) and max_p > 1):
+                        logger.info(
+                            "При повторяющихся обрывах установите download_settings.max_parallel_downloads: 1"
+                        )
                     # Увеличенная задержка для восстановления соединения
                     await asyncio.sleep(10)
                     if retry == 2:
@@ -1262,10 +1268,15 @@ class DownloadManager:
             download_directory = None
             logger.info(self.i18n.t("download_directory_default"))
 
-        # Настройка параллельных загрузок
+        # Настройка параллельных загрузок.
+        # Один MTProto-клиент = одно TCP-соединение. Слишком много параллельных загрузок
+        # приводит к обрывам ("Server closed the connection", "0 bytes read").
+        # Если в конфиге нет ключа — используем 2 (безопасный дефолт), не None (без лимита).
         max_parallel = self.config.get("download_settings", {}).get(
-            "max_parallel_downloads", None
+            "max_parallel_downloads", 2
         )
+        if max_parallel is not None and max_parallel < 1:
+            max_parallel = 2
         semaphore = asyncio.Semaphore(max_parallel) if max_parallel else None
 
         # Получить типы медиа
