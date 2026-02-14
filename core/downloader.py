@@ -896,7 +896,8 @@ class DownloadManager:
                     self.i18n.t("file_reference_expired", id=message.id)
                 )
                 messages = await client.get_messages(message.chat.id, ids=message.id)
-                message = messages[0] if messages else message
+                if messages is not None:
+                    message = messages[0] if isinstance(messages, list) else messages
                 if retry == 2:
                     logger.error(
                         self.i18n.t("file_reference_expired_skip", id=message.id)
@@ -984,8 +985,8 @@ class DownloadManager:
                             message.chat.id if message.chat else chat_id,
                             ids=message.id,
                         )
-                        if refetched:
-                            message = refetched[0]
+                        if refetched is not None:
+                            message = refetched[0] if isinstance(refetched, list) else refetched
                     except Exception:
                         pass
                     await asyncio.sleep(2)
