@@ -664,12 +664,14 @@ class DownloadManager:
                         file_name=base_file_name,
                     )
                     download_path = None
+                    skipped_as_existing = False  # уже проверен в _check_existing_file, не дублировать валидацию
                     if existing_file:
                         # Файл уже существует и валиден - пропускаем скачивание
                         logger.info(
                             self.i18n.t("file_already_exists", path=existing_file, id=message.id)
                         )
                         download_path = existing_file
+                        skipped_as_existing = True
                     else:
                         # Файл отсутствует или невалиден - скачиваем
                         if self._is_exist(file_name):
@@ -703,6 +705,7 @@ class DownloadManager:
                                     logger.debug("Файл %s уже полностью в кэше", message.id)
 
                             mode = "ab" if current_size > 0 else "wb"
+                            loop = asyncio.get_running_loop()
 
                             # Создать task непосредственно перед началом загрузки
                             if progress and own_task_id is None:
@@ -727,7 +730,9 @@ class DownloadManager:
                                         1024 * 1024,
                                         message.id,
                                     ):
-                                        f.write(chunk)
+                                        await loop.run_in_executor(
+                                            None, (lambda c: lambda: f.write(c))(chunk)
+                                        )
                                         current_size += len(chunk)
                                         self._progress_callback(
                                             current_size,
@@ -757,7 +762,9 @@ class DownloadManager:
                                             1024 * 1024,
                                             message.id,
                                         ):
-                                            f.write(chunk)
+                                            await loop.run_in_executor(
+                                                None, (lambda c: lambda: f.write(c))(chunk)
+                                            )
                                             current_size += len(chunk)
                                             self._progress_callback(
                                                 current_size,
@@ -767,8 +774,8 @@ class DownloadManager:
                                                 web_description=web_description,
                                             )
 
-                            # Переименовать после успешной загрузки
-                            shutil.move(part_file, file_name)
+                            # Переименовать после успешной загрузки (в пуле потоков, чтобы не блокировать event loop)
+                            await loop.run_in_executor(None, lambda: shutil.move(part_file, file_name))
                             download_path = file_name
                             # Telethon/iter_download может не дать последнего тика ровно в total — добиваем явно
                             final_total = file_size if file_size > 0 else current_size
@@ -851,19 +858,21 @@ class DownloadManager:
                                 web_description=web_description,
                             )
 
-                    # Всегда проверять дубликаты после загрузки (если включено)
+                    # Всегда проверять дубликаты после загрузки (если включено) — в пуле потоков (чтение/хеш файла)
                     if download_path and skip_duplicates:
-                        download_path = manage_duplicate_file(
-                            download_path, enabled=True
-                        )  # type: ignore
+                        _loop = asyncio.get_running_loop()
+                        download_path = await _loop.run_in_executor(
+                            None,
+                            lambda p=download_path: manage_duplicate_file(p, enabled=True),
+                        )
 
                     if download_path:
 
                         validate_downloads = self.config.get("download_settings", {}).get(
                             "validate_downloads", True
                         )
-                        # Валидировать медиафайл после загрузки (если включено)
-                        if validate_downloads:
+                        # Валидировать медиафайл после загрузки (если включено). Пропуск, если файл взят как существующий — уже проверен в _check_existing_file
+                        if validate_downloads and not skipped_as_existing:
                             # Блокирующая валидация в пуле потоков
                             loop = asyncio.get_running_loop()
                             is_valid = await loop.run_in_executor(
@@ -876,7 +885,9 @@ class DownloadManager:
                                     self.i18n.t("validation_failed_media", id=message.id, path=download_path)
                                 )
                                 if os.path.exists(download_path):
-                                    os.remove(download_path)
+                                    await loop.run_in_executor(
+                                        None, lambda p=download_path: os.remove(p)
+                                    )
                                 self._record_failed(chat_id, message, "validation_failed")
                                 break
 
