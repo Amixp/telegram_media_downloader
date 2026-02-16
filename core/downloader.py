@@ -27,7 +27,7 @@ from rich.progress import (
 )
 
 from utils.config import ConfigManager
-from utils.file_management import get_next_name, manage_duplicate_file
+from utils.file_management import get_file_hash, get_next_name, manage_duplicate_file
 from utils.clickhouse_db import ClickHouseMetadataDB
 from utils.history import MessageHistory
 from utils.i18n import get_i18n
@@ -232,15 +232,14 @@ class DownloadManager:
         expected_size: Optional[int] = None,
         chat_id: Optional[int] = None,
         file_name: Optional[str] = None,
+        message_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         Проверить существующий файл ДО скачивания.
 
-        Сначала проверяет файл по ожидаемому пути, затем ищет в архиве чата
-        по имени и размеру.
-
-        Если файл существует и валиден (размер, сигнатуры) - возвращает путь к нему,
-        иначе None (нужно скачивать).
+        При use_db_file_verification и ClickHouse: сначала запрос в БД,
+        проверка хеша (быстро) или validate_downloaded_media при пустом хеше.
+        Иначе: проверка по пути, затем поиск в JSONL архиве.
 
         Parameters
         ----------
@@ -251,20 +250,53 @@ class DownloadManager:
         expected_size: Optional[int]
             Ожидаемый размер файла в байтах.
         chat_id: Optional[int]
-            ID чата (для поиска в архиве).
+            ID чата (для поиска в архиве / БД).
         file_name: Optional[str]
             Имя файла (для поиска в архиве по имени).
+        message_id: Optional[int]
+            ID сообщения (для запроса в ClickHouse).
 
         Returns
         -------
         Optional[str]
             Путь к существующему валидному файлу или None.
         """
-        # Сначала проверить файл по ожидаемому пути
+        download_settings = self.config.get("download_settings", {})
+        validate_downloads = download_settings.get("validate_downloads", True)
+        use_db_verification = download_settings.get("use_db_file_verification", False)
+
+        # БД-верификация: быстрый пропуск по хешу
+        if (
+            use_db_verification
+            and self.clickhouse_db
+            and getattr(self.clickhouse_db, "enabled", False)
+            and chat_id is not None
+            and message_id is not None
+        ):
+            info = self.clickhouse_db.get_message_file_info(chat_id, message_id)
+            if info:
+                db_path, db_size, db_hash = info
+                if db_path and self._is_exist(db_path):
+                    if db_hash:
+                        try:
+                            disk_hash = get_file_hash(db_path)
+                            if disk_hash == db_hash:
+                                return db_path
+                            # Хеш не совпал — файл повреждён, fallback
+                        except (OSError, IOError):
+                            pass
+                    else:
+                        # Нет хеша в БД — полная валидация
+                        if not validate_downloads or validate_downloaded_media(
+                            db_path,
+                            media_type,
+                            db_size or expected_size,
+                            check_signature=True,
+                        ):
+                            return db_path
+
+        # Проверить файл по ожидаемому пути
         if self._is_exist(file_path):
-            validate_downloads = self.config.get("download_settings", {}).get(
-                "validate_downloads", True
-            )
             if validate_downloads:
                 if not validate_downloaded_media(
                     file_path,
@@ -272,21 +304,18 @@ class DownloadManager:
                     expected_size,
                     check_signature=True,
                 ):
-                    # Файл существует, но невалидный - нужно перескачать
-                    pass  # Продолжить поиск в архиве
+                    pass
                 else:
-                    # Файл существует и валиден - можно использовать
                     return file_path
+            else:
+                return file_path
 
-        # Если файл не найден по пути, искать в архиве по имени и размеру
+        # Искать в архиве по имени и размеру
         if chat_id is not None and file_name is not None:
             archived_path = self._find_file_in_archive(
                 chat_id, file_name, expected_size
             )
             if archived_path and self._is_exist(archived_path):
-                validate_downloads = self.config.get("download_settings", {}).get(
-                    "validate_downloads", True
-                )
                 if validate_downloads:
                     if not validate_downloaded_media(
                         archived_path,
@@ -294,9 +323,7 @@ class DownloadManager:
                         expected_size,
                         check_signature=True,
                     ):
-                        # Файл из архива невалидный
                         return None
-                # Файл из архива существует и валиден
                 return archived_path
 
         return None
@@ -654,7 +681,7 @@ class DownloadManager:
                     web_description = str(display_name)
 
                     # Умный skip ДО скачивания: проверяем существующий файл
-                    # Сначала по пути, затем в архиве по имени и размеру
+                    # При use_db_file_verification — по БД (хеш), иначе по пути и JSONL
                     base_file_name = os.path.basename(file_name)
                     existing_file = self._check_existing_file(
                         file_name,
@@ -662,6 +689,7 @@ class DownloadManager:
                         file_size if file_size else None,
                         chat_id=chat_id,
                         file_name=base_file_name,
+                        message_id=message.id,
                     )
                     download_path = None
                     skipped_as_existing = False  # уже проверен в _check_existing_file, не дублировать валидацию
@@ -672,6 +700,7 @@ class DownloadManager:
                         )
                         download_path = existing_file
                         skipped_as_existing = True
+                        self.downloaded_files[(chat_id, message.id)] = download_path
                     else:
                         # Файл отсутствует или невалиден - скачиваем
                         if self._is_exist(file_name):
@@ -899,6 +928,12 @@ class DownloadManager:
                         self.downloaded_files[(chat_id, message.id)] = download_path
                         self.downloaded_ids.append((chat_id, message.id))
                         if self.clickhouse_db.enabled:
+                            fhash = ""
+                            try:
+                                if download_path and os.path.isfile(download_path):
+                                    fhash = get_file_hash(download_path)
+                            except (OSError, IOError):
+                                pass
                             self.clickhouse_db.save_file_download(
                                 chat_id,
                                 message.id,
@@ -907,6 +942,7 @@ class DownloadManager:
                                 file_name=display_name,
                                 file_path=download_path,
                                 file_size=file_size or 0,
+                                file_hash=fhash,
                             )
 
                         # Скрыть task после завершения загрузки
@@ -1148,16 +1184,24 @@ class DownloadManager:
         if self.clickhouse_db.enabled:
             chat_title = getattr(chat, "title", None) if chat else None
             for message in messages:
+                file_path = self.downloaded_files.get((_chat_id, message.id), "")
+                fhash = ""
+                if file_path and os.path.isfile(file_path):
+                    try:
+                        fhash = get_file_hash(file_path)
+                    except (OSError, IOError):
+                        pass
                 msg_data = {
                     "chat_id": _chat_id,
                     "message_id": message.id,
                     "date": message.date,
                     "text": message.message or "",
                     "media_type": get_media_type(message),
-                    "file_path": self.downloaded_files.get((_chat_id, message.id), ""),
+                    "file_path": file_path,
                     "file_size": self._get_file_size(message),
                     "sender_id": message.sender_id or 0,
-                    "chat_title": chat_title or ""
+                    "chat_title": chat_title or "",
+                    "file_hash": fhash,
                 }
                 await self.clickhouse_db.save_message(msg_data)
 

@@ -401,6 +401,26 @@ python cleanup_orphaned_files.py \
 - Для реального удаления требуется явно указать `--force`
 - Детальное логирование всех операций
 
+#### Удаление чата из архива (`remove_chat_from_archive.py`)
+
+Удаляет чат из архива для повторной загрузки и парсинга:
+
+```bash
+# Удалить один чат
+python remove_chat_from_archive.py --config config.yaml --chat-id -1001234567890
+
+# Удалить все чаты
+python remove_chat_from_archive.py --config config.yaml --all
+
+# Показать, что будет удалено (без изменений)
+python remove_chat_from_archive.py --config config.yaml --chat-id -1001234567890 --dry-run
+
+# Также удалить медиафайлы
+python remove_chat_from_archive.py --config config.yaml --chat-id -1001234567890 --delete-media
+```
+
+**Что удаляется:** сброс в config (`last_read_message_id`, `ids_to_retry`), JSONL, HTML, данные в ClickHouse; опционально медиафайлы.
+
 ## Новые возможности
 
 ### Параллельные загрузки

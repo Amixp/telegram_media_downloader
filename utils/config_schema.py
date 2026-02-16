@@ -21,6 +21,8 @@ class DownloadSettings(BaseModel):
     history_rebuild_if_missing: bool = False
     validate_downloads: bool = True
     validate_archives: bool = True
+    # При ClickHouse: использовать БД для верификации «уже скачано» (хеш) — быстрее, чем JSONL
+    use_db_file_verification: bool = False
     auto_add_chats_from_links: bool = False
     resumable_downloads: bool = True
     cache_directory: str = ".download_cache"

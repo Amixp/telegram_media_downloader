@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **БД как верификатор скачанных файлов (ClickHouse)**
+  - Колонка `file_hash` (MD5) в таблицах `messages` и `file_downloads` для проверки целостности.
+  - Опция `download_settings.use_db_file_verification`: при `true` и включённом ClickHouse проверка «уже скачано» идёт по БД (O(1)) вместо поиска в JSONL.
+  - При совпадении хеша — пропуск скачивания; при пустом хеше — fallback на полную валидацию (размер, magic bytes).
+- **Скрипт remove_chat_from_archive.py**
+  - Удаление одного или всех чатов из архива для повторной загрузки.
+  - Опции: `--chat-id ID`, `--all`, `--delete-media`, `--dry-run`, `--yes`.
+  - Удаляет: сброс в config (last_read_message_id, ids_to_retry), JSONL, HTML, ClickHouse; опционально медиафайлы.
 - **Устойчивость к прерыванию (Ctrl+C) и целостность данных**
   - Graceful shutdown: в `finally` при любом выходе выполняются `download_manager.flush()`, `config_manager.save()`, `flush_logs()` — буфер ClickHouse и конфиг сохраняются при Ctrl+C.
   - Обработчик SIGINT/SIGTERM отменяет только дочерние задачи (загрузчик, веб-сервер); главная задача выполняет `finally` и завершается без `RuntimeError` и лишних traceback.

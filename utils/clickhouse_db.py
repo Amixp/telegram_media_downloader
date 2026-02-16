@@ -140,6 +140,17 @@ class ClickHouseMetadataDB:
             ORDER BY (chat_id, message_id)
         """)
 
+        # Миграция: колонка file_hash для верификации целостности
+        try:
+            client.execute(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_hash String DEFAULT ''"
+            )
+            client.execute(
+                "ALTER TABLE file_downloads ADD COLUMN IF NOT EXISTS file_hash String DEFAULT ''"
+            )
+        except Exception as e:
+            logger.warning("Миграция file_hash (возможно уже применена): %s", e)
+
     async def save_message(self, data: Dict[str, Any]):
         """
         Добавить сообщение в буфер для пакетной вставки.
@@ -171,7 +182,10 @@ class ClickHouseMetadataDB:
     def _insert_messages(self, messages: List[Dict[str, Any]]):
         """Вставка сообщений (синхронно для executor)."""
         client = self._get_client()
-        query = "INSERT INTO messages (chat_id, message_id, date, text, media_type, file_path, file_size, downloaded, download_date, sender_id, chat_title) VALUES"
+        query = (
+            "INSERT INTO messages (chat_id, message_id, date, text, media_type, "
+            "file_path, file_size, downloaded, download_date, sender_id, chat_title, file_hash) VALUES"
+        )
         def _str(v: Any) -> str:
             return "" if v is None else str(v)
 
@@ -188,6 +202,7 @@ class ClickHouseMetadataDB:
                 datetime.now(),
                 m.get("sender_id", 0),
                 _str(m.get("chat_title")),
+                _str(m.get("file_hash", "")),
             )
             for m in messages
         ]
@@ -392,6 +407,35 @@ class ClickHouseMetadataDB:
             logger.warning("Ошибка чтения file_path из ClickHouse: %s", e)
             return None
 
+    def get_message_file_info(
+        self, chat_id: int, message_id: int
+    ) -> Optional[Tuple[str, int, str]]:
+        """
+        Получить (file_path, file_size, file_hash) для верификации «уже скачано».
+        file_hash может быть пустой строкой (нет хеша — нужна полная валидация).
+        """
+        if not self.enabled:
+            return None
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                "SELECT file_path, file_size, file_hash FROM messages "
+                "WHERE chat_id = %(chat_id)s AND message_id = %(message_id)s LIMIT 1",
+                {"chat_id": chat_id, "message_id": message_id},
+            )
+            if not rows:
+                return None
+            row = rows[0]
+            path = (row[0] or "").strip()
+            if not path:
+                return None
+            size = int(row[1]) if row[1] is not None else 0
+            fhash = (row[2] or "").strip() if len(row) > 2 else ""
+            return (path, size, fhash)
+        except Exception as e:
+            logger.warning("Ошибка чтения file_info из ClickHouse: %s", e)
+            return None
+
     def get_chat_meta(self, chat_id: int) -> Optional[Tuple[str, int, Optional[datetime]]]:
         """
         Метаданные одного чата: (title, message_count, last_message_date).
@@ -525,6 +569,7 @@ class ClickHouseMetadataDB:
         file_path: str = "",
         file_size: int = 0,
         error_message: str = "",
+        file_hash: str = "",
     ) -> None:
         """
         Сохранить запись о файле (успех, неудача, пропуск).
@@ -536,7 +581,8 @@ class ClickHouseMetadataDB:
             client = self._get_client()
             client.execute(
                 "INSERT INTO file_downloads "
-                "(chat_id, message_id, chat_title, file_name, file_path, status, file_size, error_message, created_at) VALUES",
+                "(chat_id, message_id, chat_title, file_name, file_path, status, "
+                "file_size, error_message, created_at, file_hash) VALUES",
                 [(
                     chat_id,
                     message_id,
@@ -547,6 +593,7 @@ class ClickHouseMetadataDB:
                     file_size if file_size >= 0 else 0,
                     (error_message or "")[: 2048],
                     datetime.now(),
+                    (file_hash or "")[: 64],
                 )],
             )
         except Exception as e:
@@ -613,6 +660,30 @@ class ClickHouseMetadataDB:
         except Exception as e:
             logger.warning("Ошибка чтения file_downloads из ClickHouse: %s", e)
             return [], 0
+
+    def delete_chat_data(self, chat_id: int) -> None:
+        """
+        Удалить все данные чата из messages, file_downloads и chats.
+        Используется при удалении чата из архива (remove_chat_from_archive).
+        """
+        if not self.enabled:
+            return
+        try:
+            client = self._get_client()
+            client.execute(
+                "ALTER TABLE messages DELETE WHERE chat_id = %(chat_id)s",
+                {"chat_id": chat_id},
+            )
+            client.execute(
+                "ALTER TABLE file_downloads DELETE WHERE chat_id = %(chat_id)s",
+                {"chat_id": chat_id},
+            )
+            client.execute(
+                "ALTER TABLE chats DELETE WHERE chat_id = %(chat_id)s",
+                {"chat_id": chat_id},
+            )
+        except Exception as e:
+            logger.warning("Ошибка удаления данных чата %s из ClickHouse: %s", chat_id, e)
 
     def close(self):
         """Закрыть соединение."""

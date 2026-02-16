@@ -70,6 +70,13 @@ def _get_file_hash(file_path: str) -> str:
     return file_hash
 
 
+def get_file_hash(file_path: str) -> str:
+    """
+    Публичная обёртка для получения MD5 хеша файла (для верификации целостности).
+    """
+    return _get_file_hash(file_path)
+
+
 def manage_duplicate_file(
     file_path: str, enabled: bool = True
 ) -> str:

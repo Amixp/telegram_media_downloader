@@ -32,6 +32,8 @@ download_settings:
   history_rebuild_if_missing: false
   # Жёсткая проверка скачанных медиа (существует, размер, для video — magic bytes). При провале — в ids_to_retry.
   validate_downloads: true
+  # При ClickHouse: проверять «уже скачано» по БД (file_hash) — быстрее, чем поиск в JSONL
+  use_db_file_verification: false
   # При history_rebuild_if_missing также проверять валидность архива (JSONL/TXT). Битый — пересоздать.
   validate_archives: true
   # Автоматически добавлять чаты из ссылок в сообщениях в список загрузок
