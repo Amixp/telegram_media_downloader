@@ -125,6 +125,12 @@ class ChatConfig(BaseModel):
     enabled: bool = True
     order: Optional[int] = None
 
+class WebConfig(BaseModel):
+    """Настройки веб-дашборда."""
+    # Разрешить открытие папки в проводнике (только при локальном запросе, по умолчанию выключено)
+    open_file_manager: bool = False
+
+
 class ClickHouseConfig(BaseModel):
     enabled: bool = False
     host: str = "localhost"
@@ -154,6 +160,7 @@ class AppConfig(BaseModel):
     chat_selection_ui: Literal["classic", "tui"] = "tui"
     tui: TuiConfig = Field(default_factory=TuiConfig)
     chats: List[ChatConfig] = []
+    web: Optional[WebConfig] = None
     clickhouse: ClickHouseConfig = Field(default_factory=ClickHouseConfig)
 
     # Legacy fields

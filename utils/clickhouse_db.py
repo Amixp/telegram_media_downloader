@@ -369,6 +369,29 @@ class ClickHouseMetadataDB:
             logger.warning("Ошибка чтения страницы сообщений из ClickHouse: %s", e)
             return [], 0
 
+    def get_message_file_path(
+        self, chat_id: int, message_id: int
+    ) -> Optional[str]:
+        """
+        Получить путь к файлу сообщения по chat_id и message_id.
+        Возвращает None, если запись не найдена или file_path пустой.
+        """
+        if not self.enabled:
+            return None
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                "SELECT file_path FROM messages WHERE chat_id = %(chat_id)s AND message_id = %(message_id)s LIMIT 1",
+                {"chat_id": chat_id, "message_id": message_id},
+            )
+            if not rows:
+                return None
+            path = (rows[0][0] or "").strip()
+            return path if path else None
+        except Exception as e:
+            logger.warning("Ошибка чтения file_path из ClickHouse: %s", e)
+            return None
+
     def get_chat_meta(self, chat_id: int) -> Optional[Tuple[str, int, Optional[datetime]]]:
         """
         Метаданные одного чата: (title, message_count, last_message_date).

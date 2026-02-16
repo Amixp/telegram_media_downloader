@@ -1,10 +1,12 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -282,6 +284,148 @@ async def get_chat_messages(
     return {"messages": messages, "total": total}
 
 
+def _get_base_directory() -> str:
+    """Абсолютный путь base_directory из конфига."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    base = (config.get("download_settings") or {}).get("base_directory") or ""
+    if not base or not base.strip():
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    base = base.strip()
+    if not os.path.isabs(base):
+        config_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base = os.path.abspath(os.path.join(config_dir, base))
+    else:
+        base = os.path.abspath(base)
+    return base
+
+
+def _path_under_base(file_path: str, base_directory: str) -> bool:
+    """Проверить, что file_path находится внутри base_directory (без ..)."""
+    if not file_path or not base_directory:
+        return False
+    abs_file = os.path.abspath(file_path)
+    abs_base = os.path.abspath(base_directory)
+    try:
+        return os.path.commonpath([abs_file, abs_base]) == abs_base and abs_file.startswith(abs_base)
+    except ValueError:
+        return False
+
+
+@app.get("/api/chat/{chat_id}/message/{message_id}/file")
+async def get_message_file(chat_id: int, message_id: int):
+    """Раздача файла сообщения по chat_id и message_id. Путь проверяется относительно base_directory."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="ClickHouse disabled")
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    loop = asyncio.get_event_loop()
+    file_path = await loop.run_in_executor(
+        None,
+        lambda: db.get_message_file_path(chat_id, message_id),
+    )
+    if not file_path:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Message or file not found")
+
+    base_dir = _get_base_directory()
+    if not _path_under_base(file_path, base_dir):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="File path not allowed")
+
+    if not os.path.isfile(file_path):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    filename = os.path.basename(file_path)
+    return FileResponse(file_path, filename=filename, media_type="application/octet-stream")
+
+
+@app.get("/api/chat/{chat_id}/message/{message_id}/path")
+async def get_message_path(chat_id: int, message_id: int):
+    """Вернуть абсолютные пути к файлу и родительской папке (для копирования / открытия папки)."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        return {"file": "", "dir": ""}
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    loop = asyncio.get_event_loop()
+    file_path = await loop.run_in_executor(
+        None,
+        lambda: db.get_message_file_path(chat_id, message_id),
+    )
+    if not file_path:
+        return {"file": "", "dir": ""}
+
+    base_dir = _get_base_directory()
+    if not _path_under_base(file_path, base_dir):
+        return {"file": "", "dir": ""}
+
+    abs_file = os.path.abspath(file_path)
+    abs_dir = os.path.dirname(abs_file)
+    return {"file": abs_file, "dir": abs_dir}
+
+
+@app.post("/api/chat/{chat_id}/message/{message_id}/open_folder")
+async def open_message_folder(chat_id: int, message_id: int, request: Request):
+    """
+    Открыть папку с файлом в проводнике (только при web.open_file_manager: true и запросе с localhost).
+    """
+    from fastapi import HTTPException
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    web_cfg = config.get("web") or {}
+    if not web_cfg.get("open_file_manager"):
+        raise HTTPException(status_code=403, detail="open_file_manager is disabled")
+
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "localhost", "::1"):
+        raise HTTPException(status_code=403, detail="Only localhost is allowed for open_folder")
+
+    path_data = await get_message_path(chat_id, message_id)
+    dir_path = (path_data.get("dir") or "").strip()
+    if not dir_path:
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    base_dir = _get_base_directory()
+    if not _path_under_base(dir_path, base_dir):
+        raise HTTPException(status_code=403, detail="Path not allowed")
+
+    import subprocess
+    import sys
+    try:
+        if sys.platform == "win32":
+            file_path = (path_data.get("file") or "").strip()
+            if file_path:
+                subprocess.run(["explorer", "/select," + file_path], check=False, timeout=5)
+            else:
+                subprocess.run(["explorer", dir_path], check=False, timeout=5)
+        else:
+            subprocess.run(["xdg-open", dir_path], check=False, timeout=5)
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+        logger.warning("open_folder failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return {"ok": True}
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Публичные настройки для фронта (например open_file_manager)."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    web_cfg = config.get("web") or {}
+    return {"open_file_manager": bool(web_cfg.get("open_file_manager"))}
+
+
 @app.websocket("/ws/progress")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -296,7 +440,6 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # Монтирование статических файлов (должно быть ПОСЛЕ всех остальных маршрутов)
-import os
 static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.exists(static_path):
     app.mount("/", StaticFiles(directory=static_path, html=True), name="static")

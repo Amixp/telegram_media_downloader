@@ -4,24 +4,52 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Download,
   FileText,
   FolderOpen,
   History,
   Image,
+  Music,
   Search,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Virtuoso } from "react-virtuoso";
 import {
   Area,
   AreaChart,
   CartesianGrid,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
+
+// Error Boundary: ловит падения в дочерних компонентах, чтобы не очищать всю страницу
+class ErrorBoundary extends Component {
+  state = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("ErrorBoundary:", error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        this.props.fallback ?? (
+          <div className="p-4 rounded-lg bg-rose-900/30 border border-rose-500/50 text-rose-200 text-sm">
+            Ошибка отображения
+          </div>
+        )
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Глобальные стили для графиков
 const chartColors = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444"];
@@ -67,7 +95,54 @@ const FlowerLoader = ({ size = 28, className = "", color = "amber" }) => {
   );
 };
 
-const ChatViewer = ({ chatId, title, onClose }) => {
+// Парсит текст сообщения на сегменты: текст и ссылки t.me (c/ID, username).
+// Возвращает массив { type: 'text'|'link', value?, href?, matchedChat?, postId? }.
+function parseTelegramLinks(text, chats) {
+  if (!text || typeof text !== "string")
+    return [{ type: "text", value: text || "" }];
+  const segments = [];
+  const re =
+    /(https?:\/\/)?(?:www\.)?t\.me\/(c\/(\d+)(?:\/(\d+))?|([a-zA-Z0-9_]+)(?:\/(\d+))?)/gi;
+  let lastIndex = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > lastIndex)
+      segments.push({ type: "text", value: text.slice(lastIndex, m.index) });
+    const raw = m[0];
+    const href = /^https?:/i.test(raw) ? raw : `https://t.me/${m[2]}`;
+    const channelId = m[3];
+    const postId = m[4] || m[6] || null;
+    const username = m[5];
+    let matchedChat = null;
+    if (channelId && Array.isArray(chats)) {
+      const idNorm = String(channelId).replace(/^-100/, "");
+      matchedChat = chats.find(
+        (c) => String(c.chat_id).replace(/^-100/, "") === idNorm,
+      );
+    }
+    segments.push({
+      type: "link",
+      value: raw,
+      href,
+      matchedChat,
+      postId: postId ? parseInt(postId, 10) : null,
+      username: username || null,
+    });
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex < text.length)
+    segments.push({ type: "text", value: text.slice(lastIndex) });
+  return segments.length ? segments : [{ type: "text", value: text }];
+}
+
+const ChatViewer = ({
+  chatId,
+  title,
+  onClose,
+  initialMessageId,
+  chats = [],
+  onOpenChat,
+}) => {
   const [items, setItems] = useState([]);
   const [startOffset, setStartOffset] = useState(0);
   const [firstItemIndex, setFirstItemIndex] = useState(0);
@@ -76,6 +151,11 @@ const ChatViewer = ({ chatId, title, onClose }) => {
   const [loadingTop, setLoadingTop] = useState(false);
   const [loadingBottom, setLoadingBottom] = useState(false);
   const loadingRef = useRef(false);
+  const [openFileManager, setOpenFileManager] = useState(false);
+  const [pathModal, setPathModal] = useState(null);
+  const virtuosoRef = useRef(null);
+  const scrolledToInitialRef = useRef(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const fetchPage = useCallback(
     async (offset, limit = PAGE_SIZE) => {
@@ -105,8 +185,84 @@ const ChatViewer = ({ chatId, title, onClose }) => {
   }, [fetchPage]);
 
   useEffect(() => {
+    scrolledToInitialRef.current = false;
+  }, [chatId]);
+
+  useEffect(() => {
     loadInitial();
   }, [chatId, loadInitial]);
+
+  useEffect(() => {
+    if (
+      scrolledToInitialRef.current ||
+      searchQuery.trim() ||
+      initialMessageId == null ||
+      items.length === 0
+    )
+      return;
+    const idx = items.findIndex((m) => m.id === initialMessageId);
+    if (idx >= 0) {
+      scrolledToInitialRef.current = true;
+      setTimeout(
+        () =>
+          virtuosoRef.current?.scrollToIndex({
+            index: idx,
+            behavior: "smooth",
+          }),
+        100,
+      );
+    }
+  }, [items, initialMessageId, searchQuery]);
+
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((d) => setOpenFileManager(!!d.open_file_manager))
+      .catch(() => setOpenFileManager(false));
+  }, []);
+
+  const handleOpenFolder = useCallback(
+    async (e, messageId) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        const res = await fetch(
+          `/api/chat/${chatId}/message/${messageId}/path`,
+        );
+        const data = await res.json();
+        if (data.dir)
+          setPathModal({ messageId, dir: data.dir, file: data.file || "" });
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [chatId],
+  );
+
+  const handleCopyPath = useCallback((dir) => {
+    navigator.clipboard.writeText(dir).catch(() => {});
+    setPathModal(null);
+  }, []);
+
+  const handleOpenInExplorer = useCallback(
+    async (messageId) => {
+      try {
+        const res = await fetch(
+          `/api/chat/${chatId}/message/${messageId}/open_folder`,
+          { method: "POST" },
+        );
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          alert(d.detail || "Ошибка");
+          return;
+        }
+        setPathModal(null);
+      } catch (err) {
+        alert(err.message || "Ошибка");
+      }
+    },
+    [chatId],
+  );
 
   const loadMoreTop = useCallback(async () => {
     if (startOffset <= 0 || loadingRef.current) return;
@@ -171,7 +327,6 @@ const ChatViewer = ({ chatId, title, onClose }) => {
     }
   };
 
-  const [searchQuery, setSearchQuery] = useState("");
   const searchQueryLower = searchQuery.trim().toLowerCase();
   const filteredItems = searchQueryLower
     ? items.filter((msg) => {
@@ -252,38 +407,172 @@ const ChatViewer = ({ chatId, title, onClose }) => {
         </p>
         <div className="flex-1 min-h-0 relative">
           <Virtuoso
+            ref={virtuosoRef}
             style={{ height: "100%", minHeight: 360 }}
             data={filteredItems}
             firstItemIndex={searchQuery.trim() ? 0 : firstItemIndex}
             startReached={loadMoreTop}
             endReached={loadMoreBottom}
             overscan={200}
-            itemContent={(idx, msg) => (
-              <div className="px-4 py-2 border-b border-slate-700/30 hover:bg-slate-800/30">
-                <div className="flex items-start gap-3">
-                  <div className="flex-1 min-w-0">
+            itemContent={(idx, msg) => {
+              if (!msg) return null;
+              const fileUrl = msg.downloaded_file
+                ? `/api/chat/${chatId}/message/${msg.id}/file`
+                : null;
+              const fileName = msg.downloaded_file
+                ? msg.downloaded_file.replace(/^.*[/\\]/, "")
+                : "";
+              const mt = (msg.media_type || "").toLowerCase();
+              return (
+                <div className="px-4 py-2 border-b border-slate-700/30 hover:bg-slate-800/30">
+                  <div className="flex flex-col gap-1">
                     <p className="text-[10px] text-slate-500 font-medium">
                       {formatDate(msg.date)}
                     </p>
                     {msg.text ? (
-                      <p className="text-sm text-slate-200 break-words mt-0.5">
-                        {msg.text}
+                      <p className="text-sm text-slate-200 break-words whitespace-pre-wrap">
+                        {parseTelegramLinks(msg.text, chats).map((seg, i) =>
+                          seg.type === "text" ? (
+                            <span key={i}>{seg.value}</span>
+                          ) : seg.matchedChat ? (
+                            <a
+                              key={i}
+                              href="#"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                onOpenChat?.({
+                                  chat_id: seg.matchedChat.chat_id,
+                                  title: seg.matchedChat.title,
+                                  initialMessageId: seg.postId ?? undefined,
+                                });
+                              }}
+                              className="text-emerald-400 hover:underline"
+                            >
+                              {seg.value}
+                            </a>
+                          ) : (
+                            <a
+                              key={i}
+                              href={seg.href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sky-400 hover:underline"
+                            >
+                              {seg.value}
+                            </a>
+                          ),
+                        )}
                       </p>
                     ) : null}
-                    {msg.has_media ? (
-                      <span className="inline-flex items-center gap-1 mt-1 text-xs text-blue-400">
-                        <Image size={12} /> {msg.media_type || "Media"}
-                        {msg.file_size > 0 && (
-                          <span className="text-slate-500">
-                            ({(msg.file_size / 1024).toFixed(1)} KB)
-                          </span>
+                    {msg.has_media && (
+                      <div
+                        className="mt-1.5 rounded-lg overflow-hidden bg-slate-800/50 border border-slate-600/30 max-w-full"
+                        onMouseDown={(e) => {
+                          if (e.ctrlKey && fileUrl) {
+                            e.preventDefault();
+                            handleOpenFolder(e, msg.id);
+                          }
+                        }}
+                      >
+                        {fileUrl ? (
+                          <>
+                            {mt === "photo" && (
+                              <a
+                                href={fileUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block"
+                              >
+                                <img
+                                  src={fileUrl}
+                                  alt=""
+                                  className="max-h-[200px] w-auto object-contain"
+                                  loading="lazy"
+                                />
+                              </a>
+                            )}
+                            {(mt === "video" || mt === "video_note") && (
+                              <div className="relative">
+                                <video
+                                  src={fileUrl}
+                                  controls
+                                  preload="metadata"
+                                  className="max-h-[240px] w-full"
+                                />
+                              </div>
+                            )}
+                            {(mt === "voice" || mt === "audio") && (
+                              <div className="p-2 flex items-center gap-2">
+                                <Music
+                                  size={18}
+                                  className="text-slate-400 shrink-0"
+                                />
+                                <audio
+                                  src={fileUrl}
+                                  controls
+                                  className="flex-1 max-w-full"
+                                />
+                              </div>
+                            )}
+                            {mt !== "photo" &&
+                              mt !== "video" &&
+                              mt !== "video_note" &&
+                              mt !== "voice" &&
+                              mt !== "audio" && (
+                                <a
+                                  href={fileUrl}
+                                  download={fileName}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-2 p-2 text-slate-200 hover:bg-slate-700/50"
+                                >
+                                  <FileText
+                                    size={18}
+                                    className="text-slate-400 shrink-0"
+                                  />
+                                  <span className="truncate flex-1 min-w-0">
+                                    {fileName || msg.media_type || "File"}
+                                  </span>
+                                  {msg.file_size > 0 && (
+                                    <span className="text-xs text-slate-500 shrink-0">
+                                      {(msg.file_size / 1024).toFixed(1)} KB
+                                    </span>
+                                  )}
+                                  <Download
+                                    size={14}
+                                    className="shrink-0 text-emerald-400"
+                                  />
+                                </a>
+                              )}
+                            <div className="px-2 pb-1.5 flex justify-end">
+                              <button
+                                type="button"
+                                onClick={(ev) => handleOpenFolder(ev, msg.id)}
+                                className="flex items-center gap-1 text-xs text-slate-500 hover:text-emerald-400 transition-colors"
+                                title="Папка с файлом (Ctrl+клик)"
+                              >
+                                <FolderOpen size={14} />
+                                Папка
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex items-center gap-2 p-2 text-slate-500 text-sm">
+                            <Image size={16} className="shrink-0" />
+                            <span>
+                              {msg.media_type || "Media"}
+                              {msg.file_size > 0 &&
+                                ` (${(msg.file_size / 1024).toFixed(1)} KB)`}
+                            </span>
+                            <span className="text-xs">— не скачано</span>
+                          </div>
                         )}
-                      </span>
-                    ) : null}
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            }}
             components={{
               Header: () =>
                 loadingTop ? (
@@ -300,6 +589,47 @@ const ChatViewer = ({ chatId, title, onClose }) => {
             }}
           />
         </div>
+        {pathModal && (
+          <div
+            className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 rounded-lg p-4"
+            onClick={() => setPathModal(null)}
+          >
+            <div
+              className="bg-slate-800 border border-slate-600 rounded-lg p-4 max-w-md w-full shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p className="text-xs text-slate-500 mb-1">Папка с файлом:</p>
+              <p className="text-sm text-slate-200 break-all font-mono mb-3">
+                {pathModal.dir}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleCopyPath(pathModal.dir)}
+                  className="px-3 py-1.5 rounded bg-slate-700 text-slate-200 text-sm hover:bg-slate-600"
+                >
+                  Скопировать путь
+                </button>
+                {openFileManager && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenInExplorer(pathModal.messageId)}
+                    className="px-3 py-1.5 rounded bg-emerald-700/50 text-emerald-200 text-sm hover:bg-emerald-600/50"
+                  >
+                    Открыть в проводнике
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPathModal(null)}
+                  className="px-3 py-1.5 rounded bg-slate-700 text-slate-400 text-sm hover:bg-slate-600"
+                >
+                  Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -799,6 +1129,43 @@ const Dashboard = () => {
   const ws = useRef(null);
   const speedBuffer = useRef([]);
   const etaBuffer = useRef([]);
+  const chartContainerRef = useRef(null);
+  const [chartSize, setChartSize] = useState({ width: 0, height: 256 });
+  const showProgressContent = activeTab === "progress" && !selectedChat;
+
+  const chartObserverRef = useRef(null);
+
+  useEffect(() => {
+    if (!showProgressContent) {
+      setChartSize((s) => (s.width > 0 ? { width: 0, height: 256 } : s));
+      if (chartObserverRef.current) {
+        chartObserverRef.current.disconnect();
+        chartObserverRef.current = null;
+      }
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      const el = chartContainerRef.current;
+      if (!el) return;
+      const ro = new ResizeObserver((entries) => {
+        const { width, height } = entries[0].contentRect;
+        if (width > 0 && height > 0)
+          setChartSize({
+            width: Math.round(width),
+            height: Math.min(Math.round(height), 256),
+          });
+      });
+      chartObserverRef.current = ro;
+      ro.observe(el);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      if (chartObserverRef.current) {
+        chartObserverRef.current.disconnect();
+        chartObserverRef.current = null;
+      }
+    };
+  }, [showProgressContent]);
 
   useEffect(() => {
     connectWS();
@@ -928,16 +1295,44 @@ const Dashboard = () => {
 
   return (
     <div className="app-container p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative">
-      <AnimatePresence>
-        {selectedChat && (
-          <ChatViewer
-            key={selectedChat.chat_id}
-            chatId={selectedChat.chat_id}
-            title={selectedChat.title}
-            onClose={() => setSelectedChat(null)}
-          />
+      {selectedChat &&
+        createPortal(
+          <ErrorBoundary
+            fallback={
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+                <div className="glass-card p-6 max-w-md">
+                  <p className="text-rose-300 mb-4">Ошибка при открытии чата</p>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedChat(null)}
+                    className="px-4 py-2 rounded bg-slate-600 text-white hover:bg-slate-500"
+                  >
+                    Закрыть
+                  </button>
+                </div>
+              </div>
+            }
+          >
+            <AnimatePresence>
+              <ChatViewer
+                key={selectedChat.chat_id}
+                chatId={selectedChat.chat_id}
+                title={selectedChat.title}
+                onClose={() => setSelectedChat(null)}
+                initialMessageId={selectedChat.initialMessageId}
+                chats={stats?.chats || []}
+                onOpenChat={(payload) =>
+                  setSelectedChat({
+                    chat_id: payload.chat_id,
+                    title: payload.title ?? `Chat ${payload.chat_id}`,
+                    initialMessageId: payload.initialMessageId,
+                  })
+                }
+              />
+            </AnimatePresence>
+          </ErrorBoundary>,
+          document.body,
         )}
-      </AnimatePresence>
       {/* Header */}
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -1015,7 +1410,7 @@ const Dashboard = () => {
         />
       )}
 
-      {activeTab === "progress" && (
+      {showProgressContent && (
         <>
           {/* Hero Progress Section */}
           <motion.section
@@ -1130,82 +1525,101 @@ const Dashboard = () => {
                 </div>
               </section>
 
-              {/* Charts Section */}
+              {/* Charts Section — рендер только при положительных размерах, без ResponsiveContainer */}
               {stats.enabled && stats.history && stats.history.length > 0 && (
-                <section className="glass-card p-6">
-                  <h3 className="card-title text-white">
-                    <History size={18} className="text-indigo-400" /> Download
-                    History
-                  </h3>
-                  <div
-                    style={{ width: "100%", height: "256px" }}
-                    className="mt-6"
-                  >
-                    <ResponsiveContainer
-                      width="100%"
-                      height="100%"
-                      minWidth={300}
-                      minHeight={200}
+                <ErrorBoundary
+                  fallback={
+                    <section className="glass-card p-6">
+                      <h3 className="card-title text-white">
+                        <History size={18} className="text-indigo-400" />{" "}
+                        Download History
+                      </h3>
+                      <p className="mt-4 text-slate-400 text-sm">
+                        Ошибка отображения графика
+                      </p>
+                    </section>
+                  }
+                >
+                  <section className="glass-card p-6">
+                    <h3 className="card-title text-white">
+                      <History size={18} className="text-indigo-400" /> Download
+                      History
+                    </h3>
+                    <div
+                      ref={chartContainerRef}
+                      className="mt-6"
+                      style={{
+                        width: "100%",
+                        minWidth: 300,
+                        height: 256,
+                        minHeight: 200,
+                      }}
                     >
-                      <AreaChart data={stats.history}>
-                        <defs>
-                          <linearGradient
-                            id="colorCount"
-                            x1="0"
-                            y1="0"
-                            x2="0"
-                            y2="1"
-                          >
-                            <stop
-                              offset="5%"
-                              stopColor="#3b82f6"
-                              stopOpacity={0.3}
-                            />
-                            <stop
-                              offset="95%"
-                              stopColor="#3b82f6"
-                              stopOpacity={0}
-                            />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid
-                          strokeDasharray="3 3"
-                          stroke="#475569"
-                          vertical={false}
-                        />
-                        <XAxis
-                          dataKey="date"
-                          stroke="#94a3b8"
-                          fontSize={11}
-                          tickLine={false}
-                          axisLine={false}
-                        />
-                        <YAxis
-                          stroke="#94a3b8"
-                          fontSize={11}
-                          tickLine={false}
-                          axisLine={false}
-                        />
-                        <Tooltip
-                          contentStyle={{
-                            backgroundColor: "#1e293b",
-                            border: "1px solid #475569",
-                            borderRadius: "8px",
-                          }}
-                          itemStyle={{ color: "#fff" }}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="count"
-                          stroke="#3b82f6"
-                          fillOpacity={1}
-                          fill="url(#colorCount)"
-                          strokeWidth={2}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </section>
+                      {chartSize.width > 0 && (
+                        <AreaChart
+                          width={chartSize.width}
+                          height={chartSize.height}
+                          data={stats.history}
+                        >
+                          <defs>
+                            <linearGradient
+                              id="colorCount"
+                              x1="0"
+                              y1="0"
+                              x2="0"
+                              y2="1"
+                            >
+                              <stop
+                                offset="5%"
+                                stopColor="#3b82f6"
+                                stopOpacity={0.3}
+                              />
+                              <stop
+                                offset="95%"
+                                stopColor="#3b82f6"
+                                stopOpacity={0}
+                              />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            stroke="#475569"
+                            vertical={false}
+                          />
+                          <XAxis
+                            dataKey="date"
+                            stroke="#94a3b8"
+                            fontSize={11}
+                            tickLine={false}
+                            axisLine={false}
+                          />
+                          <YAxis
+                            stroke="#94a3b8"
+                            fontSize={11}
+                            tickLine={false}
+                            axisLine={false}
+                          />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: "#1e293b",
+                              border: "1px solid #475569",
+                              borderRadius: "8px",
+                            }}
+                            itemStyle={{ color: "#fff" }}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="count"
+                            stroke="#3b82f6"
+                            fillOpacity={1}
+                            fill="url(#colorCount)"
+                            strokeWidth={2}
+                          />
+                        </AreaChart>
+                      )}
+                    </div>
+                  </section>
+                </ErrorBoundary>
               )}
             </div>
 
