@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import argparse
+import sys
 from typing import List, Set
 
 from rich.logging import RichHandler
@@ -168,9 +169,18 @@ async def main_async(args: argparse.Namespace):
             await downloader_task
 
     finally:
+        # Graceful shutdown: flush буферов и сохранение конфига при любом выходе (в т.ч. Ctrl+C)
+        try:
+            if "download_manager" in locals() and download_manager is not None:
+                await download_manager.flush()
+            if "config_manager" in locals() and config_manager is not None:
+                config_manager.save()
+        except Exception as e:
+            if getattr(sys, "meta_path", None) is not None:
+                logger.warning("Ошибка при завершении (flush/save): %s", e)
         if "clickhouse_db" in locals() and clickhouse_db is not None and getattr(clickhouse_db, "enabled", False):
             await clickhouse_db.flush_logs()
-        if "download_manager" in locals():
+        if "download_manager" in locals() and download_manager is not None:
             download_manager.close()
         await session_manager.stop()
 
@@ -184,23 +194,34 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Обработка сигналов для корректного завершения
+    # Обработка сигналов: отменяем только дочерние задачи, главная — выполняет finally (flush/save).
+    # loop.stop() не вызываем, чтобы main_async успел выполнить finally.
     import signal
-    def stop_loop():
-        for task in asyncio.all_tasks(loop):
-            task.cancel()
-        logger.info("Получен сигнал прерывания, завершение работы...")
-        # Остановить цикл, иначе при зависании загрузки в I/O процесс не выйдет
-        loop.call_soon_threadsafe(loop.stop)
+    main_task_ref = []
+
+    def on_signal():
+        if main_task_ref:
+            main_task = main_task_ref[0]
+            for task in asyncio.all_tasks(loop):
+                if task is not main_task:
+                    task.cancel()
+        else:
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+        try:
+            logger.info("Получен сигнал прерывания, завершение работы...")
+        except Exception:
+            pass
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, stop_loop)
+            loop.add_signal_handler(sig, on_signal)
         except NotImplementedError:
             pass
 
     try:
-        loop.run_until_complete(main_async(args))
+        main_task_ref.append(loop.create_task(main_async(args)))
+        loop.run_until_complete(main_task_ref[0])
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     finally:

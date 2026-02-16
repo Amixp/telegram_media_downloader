@@ -60,6 +60,7 @@ class DownloadManager:
         self.config_manager = config_manager
         self.config = config_manager.config
         self.failed_ids: List[Tuple[int, int]] = []  # [(chat_id, message_id), ...]
+        self.permanent_skip_ids: List[Tuple[int, int]] = []  # FileReferenceExpired после 3 попыток — не retry
         self.downloaded_ids: List[Tuple[int, int]] = []  # [(chat_id, message_id), ...]
         self.downloaded_files: Dict[Tuple[int, int], str] = {}  # {(chat_id, message_id): file_path}
         # ClickHouse (передан снаружи или создаём свой)
@@ -409,9 +410,17 @@ class DownloadManager:
                     return getattr(attr, "file_name", "") or ""
         return f"msg_{message.id}"
 
-    def _record_failed(self, chat_id: int, message: Message, error_message: str = "") -> None:
-        """Добавить сообщение в failed_ids и записать в ClickHouse file_downloads."""
-        self.failed_ids.append((chat_id, message.id))
+    def _record_failed(
+        self, chat_id: int, message: Message, error_message: str = "", add_to_retry: bool = True
+    ) -> None:
+        """
+        Записать неудачную загрузку в ClickHouse.
+        add_to_retry: добавлять ли в failed_ids (и далее в ids_to_retry).
+        Для FileReferenceExpiredError после 3 попыток — False: refetch не помогает,
+        повтор при следующем запуске тоже не поможет.
+        """
+        if add_to_retry:
+            self.failed_ids.append((chat_id, message.id))
         if self.clickhouse_db.enabled:
             self.clickhouse_db.save_file_download(
                 chat_id,
@@ -624,6 +633,8 @@ class DownloadManager:
 
                     # own_task_id будет создан непосредственно перед началом загрузки
                     own_task_id = None
+                    web_task_id: Optional[str] = None
+                    web_description: Optional[str] = None
 
                     # Проверить, нужно ли пропускать дубликаты
                     skip_duplicates = self.config.get("download_settings", {}).get(
@@ -638,7 +649,7 @@ class DownloadManager:
                         # Fallback: если chat_id не установлен в конфиге, использовать из сообщения
                         chat_id = message.chat.id if message.chat else 0
 
-                    # Для веб-дашборда хотим стабильный task_id и короткое описание (имя файла)
+                    # Для веб-дашборда: стабильный task_id и короткое описание (имя файла)
                     web_task_id = f"{chat_id}_{message.id}"
                     web_description = str(display_name)
 
@@ -905,7 +916,20 @@ class DownloadManager:
                     chat_id = self.config.get("chat_id", 0)
                     if chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self._record_failed(chat_id, message, "file_reference_expired")
+                    # Не добавлять в ids_to_retry: refetch 3 раза не помог — файл недоступен,
+                    # повтор при следующем запуске не поможет (то же самое).
+                    self.permanent_skip_ids.append((chat_id, message.id))
+                    self._record_failed(
+                        chat_id, message, "file_reference_expired", add_to_retry=False
+                    )
+                    if progress and own_task_id is not None:
+                        progress.update(own_task_id, visible=False)
+                    if self.web_app and web_task_id is not None and file_size:
+                        self._progress_callback(
+                            file_size, file_size,
+                            progress=progress, task_id=own_task_id,
+                            web_task_id=web_task_id, web_description=web_description,
+                        )
             except FloodWaitError as e:
                 logger.warning(
                     self.i18n.t("flood_wait_error", id=message.id, seconds=e.seconds)
@@ -924,6 +948,14 @@ class DownloadManager:
                     if chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
                     self._record_failed(chat_id, message, "timeout")
+                    if progress and own_task_id is not None:
+                        progress.update(own_task_id, visible=False)
+                    if self.web_app and web_task_id is not None and file_size:
+                        self._progress_callback(
+                            file_size, file_size,
+                            progress=progress, task_id=own_task_id,
+                            web_task_id=web_task_id, web_description=web_description,
+                        )
             except FileMigrateError as e:
                 # Файл в другом DC, переключение может занять время
                 dc_num = getattr(e, "new_dc", "?")
@@ -940,6 +972,14 @@ class DownloadManager:
                     if chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
                     self._record_failed(chat_id, message, f"file_migrate dc={dc_num}")
+                    if progress and own_task_id is not None:
+                        progress.update(own_task_id, visible=False)
+                    if self.web_app and web_task_id is not None and file_size:
+                        self._progress_callback(
+                            file_size, file_size,
+                            progress=progress, task_id=own_task_id,
+                            web_task_id=web_task_id, web_description=web_description,
+                        )
             except (asyncio.IncompleteReadError, ConnectionError, OSError) as e:
                 # Обрыв соединения при переключении DC или сетевые проблемы
                 error_str = str(e)
@@ -963,6 +1003,14 @@ class DownloadManager:
                         if chat_id == 0:
                             chat_id = message.chat.id if message.chat else 0
                         self._record_failed(chat_id, message, error_str)
+                        if progress and own_task_id is not None:
+                            progress.update(own_task_id, visible=False)
+                        if self.web_app and web_task_id is not None and file_size:
+                            self._progress_callback(
+                                file_size, file_size,
+                                progress=progress, task_id=own_task_id,
+                                web_task_id=web_task_id, web_description=web_description,
+                            )
                 else:
                     # Другие OSError/ConnectionError - пробрасываем в общий Exception handler
                     raise
@@ -992,6 +1040,14 @@ class DownloadManager:
                     await asyncio.sleep(2)
                 else:
                     self._record_failed(chat_id, message, str(e))
+                    if progress and own_task_id is not None:
+                        progress.update(own_task_id, visible=False)
+                    if self.web_app and web_task_id is not None and file_size:
+                        self._progress_callback(
+                            file_size, file_size,
+                            progress=progress, task_id=own_task_id,
+                            web_task_id=web_task_id, web_description=web_description,
+                        )
                     break
         return message.id
 
@@ -1075,26 +1131,9 @@ class DownloadManager:
             len(messages),
         )
 
-        # Сохранить историю ВСЕХ сообщений, если включено
-        if self.history_manager is not None:
-            chat_title = getattr(chat, "title", None) if chat else None
-            # Создать словарь только для текущего чата
-            # Используем _chat_id из конфига для правильного сопоставления
-            downloaded_files = {
-                msg_id: path
-                for (cid, msg_id), path in self.downloaded_files.items()
-                if cid == _chat_id
-            }
-            logger.info(
-                "Сохранение истории в архив: chat_id=%s, сообщений=%s",
-                _chat_id,
-                len(messages),
-            )
-            self.history_manager.save_batch(
-                messages, _chat_id, chat_title, downloaded_files
-            )
-
-        # Сохранить в ClickHouse
+        # Сначала ClickHouse (flush): проверка дубликатов архива идёт по CH.
+        # При прерывании до flush архив уже записан — дубли при следующем запуске.
+        # Порядок: CH flush → архив.
         if self.clickhouse_db.enabled:
             chat_title = getattr(chat, "title", None) if chat else None
             for message in messages:
@@ -1121,6 +1160,23 @@ class DownloadManager:
                 current_chat_size
             )
             await self.clickhouse_db.flush()
+
+        # Сохранить историю ВСЕХ сообщений, если включено (после CH flush)
+        if self.history_manager is not None:
+            chat_title = getattr(chat, "title", None) if chat else None
+            downloaded_files = {
+                msg_id: path
+                for (cid, msg_id), path in self.downloaded_files.items()
+                if cid == _chat_id
+            }
+            logger.info(
+                "Сохранение истории в архив: chat_id=%s, сообщений=%s",
+                _chat_id,
+                len(messages),
+            )
+            self.history_manager.save_batch(
+                messages, _chat_id, chat_title, downloaded_files
+            )
 
         last_message_id: int = max(message_ids)
         return last_message_id
@@ -1160,11 +1216,19 @@ class DownloadManager:
         # Фильтровать downloaded_ids и failed_ids только для текущего чата
         chat_downloaded_ids = [msg_id for (cid, msg_id) in self.downloaded_ids if cid == chat_id]
         chat_failed_ids = [msg_id for (cid, msg_id) in self.failed_ids if cid == chat_id]
+        chat_permanent_skip_ids = [
+            msg_id for (cid, msg_id) in self.permanent_skip_ids if cid == chat_id
+        ]
 
-        # Обновить ids_to_retry: убрать успешно загруженные, добавить неудачные.
+        # Обновить ids_to_retry: убрать успешно загруженные, permanent_skip (FileReferenceExpired
+        # после 3 попыток), добавить неудачные.
         # Дедупликация (dict.fromkeys) — иначе одно и то же сообщение при повторных сбоях
         # добавляется каждый запуск и очередь растёт без ограничения.
-        remaining = list(set(current_ids_to_retry) - set(chat_downloaded_ids))
+        remaining = list(
+            set(current_ids_to_retry)
+            - set(chat_downloaded_ids)
+            - set(chat_permanent_skip_ids)
+        )
         ids_to_retry = list(dict.fromkeys(remaining + chat_failed_ids))
 
         # Ограничить размер очереди повторов, чтобы при нестабильной сети не раздувать партию
@@ -1409,6 +1473,9 @@ class DownloadManager:
                         del self.downloaded_files[k]
                     self.downloaded_ids = [(c, m) for (c, m) in self.downloaded_ids if c != chat_id]
                     self.failed_ids = [(c, m) for (c, m) in self.failed_ids if c != chat_id]
+                    self.permanent_skip_ids = [
+                        (c, m) for (c, m) in self.permanent_skip_ids if c != chat_id
+                    ]
                     return
 
         try:
@@ -1471,9 +1538,12 @@ class DownloadManager:
         for key in keys_to_remove:
             del self.downloaded_files[key]
 
-        # Очистить downloaded_ids и failed_ids для текущего чата
+        # Очистить downloaded_ids, failed_ids, permanent_skip_ids для текущего чата
         self.downloaded_ids = [(cid, msg_id) for (cid, msg_id) in self.downloaded_ids if cid != chat_id]
         self.failed_ids = [(cid, msg_id) for (cid, msg_id) in self.failed_ids if cid != chat_id]
+        self.permanent_skip_ids = [
+            (cid, msg_id) for (cid, msg_id) in self.permanent_skip_ids if cid != chat_id
+        ]
 
     async def begin_import_all_chats(
         self,

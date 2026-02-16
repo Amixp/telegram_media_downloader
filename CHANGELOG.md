@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Устойчивость к прерыванию (Ctrl+C) и целостность данных**
+  - Graceful shutdown: в `finally` при любом выходе выполняются `download_manager.flush()`, `config_manager.save()`, `flush_logs()` — буфер ClickHouse и конфиг сохраняются при Ctrl+C.
+  - Обработчик SIGINT/SIGTERM отменяет только дочерние задачи (загрузчик, веб-сервер); главная задача выполняет `finally` и завершается без `RuntimeError` и лишних traceback.
+  - Порядок записи пачки: сначала ClickHouse (flush), затем архив — при обрыве проверка дубликатов по CH не даёт повторов в JSONL.
+  - Атомарная запись конфига: запись во временный файл, `fsync`, `os.replace()` — при прерывании во время save основной файл не повреждается.
+
 ### Fixed
+- **FileReferenceExpired: пропущенные файлы не зацикливаются**
+  - Сообщения с истёкшей ссылкой после 3 попыток не добавляются в `ids_to_retry` (`permanent_skip_ids`), при следующем запуске не обрабатываются снова.
+  - Пропущенные файлы убираются из активных загрузок: скрытие задачи в Rich progress и вызов `_progress_callback(total, total)` для очистки веб-дашборда.
+- **get_messages возвращает один Message**
+  - Обработка случая, когда Telethon возвращает один объект `Message` вместо списка — устранена ошибка `'Message' object is not subscriptable` при refetch по FileReferenceExpiredError.
+- **Параллельные загрузки и обрывы соединения**
+  - Дефолт `max_parallel_downloads` в коде — 2 (при отсутствии в конфиге), в схеме — 2; без лимита один MTProto-канал перегружался и сервер обрывал соединение.
+  - В логе при обрыве выводится подсказка установить `max_parallel_downloads: 1`.
 - **Логи/Файлы — зависание и обрыв WebSocket при «Обновить»**
   - Блокирующие вызовы ClickHouse (`get_logs`, `get_files`, `get_stats`, `get_messages_page`) перенесены в `run_in_executor`, чтобы не блокировать event loop FastAPI — сохранение WS-соединения при долгих запросах.
 - **Логи — асинхронность и UX**

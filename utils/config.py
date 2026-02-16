@@ -65,11 +65,11 @@ class ConfigManager:
             # Let's check: in the original validate, it checks keys existence.
             # Pydantic's model_dump() with defaults is safer.
             # Actually, let's keep it simple:
-            # self._config = app_config.model_dump() 
+            # self._config = app_config.model_dump()
             # But we must ensure that `api_id` and `api_hash` which might be None if valid (via validator?)
             # Wait, the validator returns None if it's "your_api_id".
             # So api_id can be None.
-            
+
         except ValidationError as e:
             logger.error("❌ Ошибка валидации конфигурации:")
             for error in e.errors():
@@ -82,7 +82,7 @@ class ConfigManager:
     def validate(self) -> None:
         """
         Валидация конфигурации.
-        
+
         В новой версии валидация происходит при load().
         Этот метод оставлен для совместимости, но он просто проверяет, что конфиг загружен.
         """
@@ -107,8 +107,14 @@ class ConfigManager:
         if config_dir:
             os.makedirs(config_dir, exist_ok=True)
 
-        with open(self.config_path, "w", encoding="utf-8") as f:
+        # Атомарная запись: во временный файл → fsync → rename
+        # При прерывании основной файл остаётся целым.
+        tmp_path = self.config_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             yaml.dump(config_to_save, f, default_flow_style=False, allow_unicode=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, self.config_path)
 
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -270,7 +276,7 @@ class ConfigManager:
             self._config["chats"] = []
 
         chats_list: List[Dict[str, Any]] = self._config["chats"]
-        
+
         # Проверить, есть ли уже этот чат в списке
         for chat in chats_list:
             if isinstance(chat, dict) and chat.get("chat_id") == chat_id:
@@ -287,7 +293,7 @@ class ConfigManager:
             "ids_to_retry": [],
             "enabled": False,  # По умолчанию выключен, пользователь включит при следующем запуске
         }
-        
+
         # Определить порядок (последний в очереди)
         max_order = -1
         for chat in chats_list:
@@ -298,10 +304,10 @@ class ConfigManager:
                         max_order = order
                 except (ValueError, TypeError):
                     pass
-        
+
         new_chat["order"] = max_order + 1
         chats_list.append(new_chat)
-        
+
         return True
 
     @property
