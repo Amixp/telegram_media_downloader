@@ -5,8 +5,11 @@ import argparse
 import sys
 from typing import List, Set
 
+from rich.console import Console
 from rich.logging import RichHandler
 from rich.prompt import Confirm
+
+console = Console()
 
 from core.downloader import DownloadManager
 from core.session import SessionManager
@@ -47,14 +50,35 @@ async def main_async(args: argparse.Namespace):
     client = await session_manager.create_client()
 
     try:
+        # Инициализация ClickHouse до выбора чатов (для загрузки чатов из БД)
+        clickhouse_db = None
+        if config.get("clickhouse", {}).get("enabled"):
+            from utils.clickhouse_db import ClickHouseMetadataDB
+            from utils.log import ClickHouseLogHandler
+            clickhouse_db = ClickHouseMetadataDB(config["clickhouse"])
+            if clickhouse_db.enabled:
+                try:
+                    clickhouse_db.check_connection()
+                except Exception as e:
+                    logger.warning("Нет доступа к ClickHouse: %s. Операции с БД отключены.", e)
+                    clickhouse_db.enabled = False
+                    if getattr(clickhouse_db, "_client", None) is not None:
+                        try:
+                            clickhouse_db._client.disconnect()
+                        except Exception:
+                            pass
+                        clickhouse_db._client = None
+
         # Выбор чатов
         language = config.get("language", "ru")
         chat_selector = ChatSelector(client, language, tui_config=config.get("tui"))
         chat_selection_ui = config.get("chat_selection_ui", "classic")
 
-        # Проверить, есть ли сохраненные чаты в конфиге
+        # Проверить, есть ли сохраненные чаты в конфиге или БД
         selected_chats = []
-        if "chats" in config and isinstance(config["chats"], list):
+        config_has_chats = "chats" in config and isinstance(config["chats"], list) and len(config["chats"]) > 0
+        
+        if config_has_chats:
             enabled_entries = [c for c in config["chats"] if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c]
             # Если есть order хотя бы у одного — сортируем очередь по нему, иначе сохраняем порядок из YAML
             if any("order" in c for c in enabled_entries):
@@ -87,8 +111,33 @@ async def main_async(args: argparse.Namespace):
         elif config.get("chat_id"):
             # Старая структура - один чат
             selected_chats = [(config["chat_id"], "", "single")]
+        elif clickhouse_db and clickhouse_db.enabled:
+            # Нет чатов в конфиге - попробовать загрузить из БД
+            db_chats = clickhouse_db.get_all_chats()
+            if db_chats:
+                console.print(f"[cyan]Найдено {len(db_chats)} чатов в БД[/cyan]")
+                preselected_ids_db: Set[int] = {cid for cid, _ in db_chats}
+                preselected_order_db: List[int] = [cid for cid, _ in db_chats]
+                
+                edit = Confirm.ask("Редактировать список чатов из БД?", default=False)
+                if edit:
+                    selected_chats = await chat_selector.select_chats(
+                        allow_multiple=True,
+                        ui=chat_selection_ui,
+                        preselected_chat_ids=preselected_ids_db,
+                        preselected_chat_id_order=preselected_order_db,
+                    )
+                else:
+                    selected_chats = [(cid, title, "db") for cid, title in db_chats]
+            else:
+                # Нет чатов ни в конфиге, ни в БД - интерактивный выбор
+                selected_chats = await chat_selector.select_chats(
+                    allow_multiple=True,
+                    ui=chat_selection_ui,
+                    preselected_chat_ids=None,
+                )
         else:
-            # Интерактивный выбор
+            # Интерактивный выбор (ClickHouse отключен)
             selected_chats = await chat_selector.select_chats(
                 allow_multiple=True,
                 ui=chat_selection_ui,
@@ -100,29 +149,19 @@ async def main_async(args: argparse.Namespace):
             await session_manager.stop()
             return
 
-        # Сохранить выбранные чаты в конфиг
+        # Сохранить выбранные чаты в БД (если включена) и конфиг
+        if clickhouse_db and clickhouse_db.enabled:
+            clickhouse_db.save_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
+        
         config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
         config_manager.save()
 
-        # Один экземпляр ClickHouse для логов и загрузчика (логи пишем в БД)
-        clickhouse_db = None
-        if config.get("clickhouse", {}).get("enabled"):
-            from utils.clickhouse_db import ClickHouseMetadataDB
+        # Настройка логирования в ClickHouse (если включено)
+        if clickhouse_db and clickhouse_db.enabled:
             from utils.log import ClickHouseLogHandler
-            clickhouse_db = ClickHouseMetadataDB(config["clickhouse"])
-            if clickhouse_db.enabled:
-                if config.get("clickhouse", {}).get("primary_source"):
-                    try:
-                        clickhouse_db.check_connection()
-                    except Exception as e:
-                        logger.warning("Нет доступа к ClickHouse (primary_source=true): %s. Операции с БД отключены.", e)
-                        clickhouse_db.enabled = False
-                        if getattr(clickhouse_db, "_client", None) is not None:
-                            try:
-                                clickhouse_db._client.disconnect()
-                            except Exception:
-                                pass
-                            clickhouse_db._client = None
+            if config.get("clickhouse", {}).get("primary_source"):
+                # Дополнительная проверка для primary_source режима
+                pass
                 if clickhouse_db.enabled:
                     root_logger = logging.getLogger()
                     handler = ClickHouseLogHandler(clickhouse_db)

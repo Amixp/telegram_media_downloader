@@ -1388,12 +1388,12 @@ class DownloadManager:
 
     def _get_chat_state_from_config(self, chat_id: int) -> Tuple[int, List[int]]:
         """Получить last_read_message_id и ids_to_retry из config.yaml.
-        
+
         Parameters
         ----------
         chat_id : int
             ID чата
-            
+
         Returns
         -------
         Tuple[int, List[int]]
@@ -1401,7 +1401,7 @@ class DownloadManager:
         """
         last_read_message_id = 0
         ids_to_retry = []
-        
+
         if "chats" in self.config and isinstance(self.config["chats"], list):
             chat_config = next(
                 (c for c in self.config["chats"] if c.get("chat_id") == chat_id), None
@@ -1414,12 +1414,12 @@ class DownloadManager:
             if self.config.get("chat_id") == chat_id:
                 last_read_message_id = self.config.get("last_read_message_id", 0)
                 ids_to_retry = self.config.get("ids_to_retry", [])
-        
+
         return last_read_message_id, ids_to_retry
 
     def _migrate_chat_to_db(self, chat_id: int, chat_title: str = "") -> None:
         """Мигрировать чат из config.yaml в ClickHouse.
-        
+
         Parameters
         ----------
         chat_id : int
@@ -1429,14 +1429,14 @@ class DownloadManager:
         """
         if not self.clickhouse_db or not self.clickhouse_db.enabled:
             return
-        
+
         # Проверить, есть ли чат в БД
         if self.clickhouse_db.chat_exists(chat_id):
             # Чат есть в БД - удалить из config.yaml
             if "chats" in self.config and isinstance(self.config["chats"], list):
                 original_count = len(self.config["chats"])
                 self.config["chats"] = [
-                    c for c in self.config["chats"] 
+                    c for c in self.config["chats"]
                     if c.get("chat_id") != chat_id
                 ]
                 if len(self.config["chats"]) < original_count:
@@ -1451,19 +1451,19 @@ class DownloadManager:
             config_title = chat_title
             if "chats" in self.config and isinstance(self.config["chats"], list):
                 chat_config = next(
-                    (c for c in self.config["chats"] if c.get("chat_id") == chat_id), 
+                    (c for c in self.config["chats"] if c.get("chat_id") == chat_id),
                     None
                 )
                 if chat_config and chat_config.get("title"):
                     config_title = chat_config["title"]
-            
+
             self.clickhouse_db.ensure_chat_in_db(chat_id, config_title)
-            
+
             # После добавления в БД - удалить из config.yaml
             if "chats" in self.config and isinstance(self.config["chats"], list):
                 original_count = len(self.config["chats"])
                 self.config["chats"] = [
-                    c for c in self.config["chats"] 
+                    c for c in self.config["chats"]
                     if c.get("chat_id") != chat_id
                 ]
                 if len(self.config["chats"]) < original_count:
@@ -1573,7 +1573,7 @@ class DownloadManager:
         if self.clickhouse_db and self.clickhouse_db.enabled:
             # МИГРАЦИЯ: добавить чат в БД, если его там нет, или удалить из config, если есть
             self._migrate_chat_to_db(chat_id, chat_title or "")
-            
+
             # Приоритет: запросить из БД
             db_last_id = self.clickhouse_db.get_last_processed_message_id(chat_id)
             if db_last_id is not None:

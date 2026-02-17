@@ -223,6 +223,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Исключены проверки старых сообщений при перезапуске приложения
   - Автоматическая миграция чатов: добавление в БД из config.yaml и удаление из конфига после миграции
   - При отключенном ClickHouse автоматический fallback на config.yaml
+- **Управление списком чатов через ClickHouse**
+  - При отсутствии чатов в config.yaml чаты загружаются из таблицы chats в БД
+  - После выбора чатов через TUI они автоматически сохраняются в БД
+  - Список чатов хранится в БД, config.yaml используется только как fallback
+  - Новые методы в ClickHouseMetadataDB: `get_all_chats()`, `save_selected_chats()`
 - **Проверка архивов при `history_rebuild_if_missing`**
   - Вместо простой проверки `os.path.exists()` используется `validate_archive_file()`
   - Пустые или битые архивы теперь считаются невалидными и пересоздаются

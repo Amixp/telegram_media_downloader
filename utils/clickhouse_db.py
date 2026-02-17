@@ -875,12 +875,12 @@ class ClickHouseMetadataDB:
 
     def chat_exists(self, chat_id: int) -> bool:
         """Проверить существование чата в таблице chats.
-        
+
         Parameters
         ----------
         chat_id : int
             ID чата
-            
+
         Returns
         -------
         bool
@@ -926,14 +926,56 @@ class ClickHouseMetadataDB:
             # ReplacingMergeTree может вызвать конфликт при параллельной вставке
             logger.debug("Чат %s уже существует в БД или ошибка вставки: %s", chat_id, e)
 
+    def get_all_chats(self) -> List[Tuple[int, str]]:
+        """Получить список всех чатов из таблицы chats.
+        
+        Returns
+        -------
+        List[Tuple[int, str]]
+            Список кортежей (chat_id, title)
+        """
+        if not self.enabled:
+            return []
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                """
+                SELECT chat_id, any(title) as title
+                FROM chats
+                GROUP BY chat_id
+                ORDER BY chat_id
+                """
+            )
+            return [(int(row[0]), str(row[1])) for row in rows]
+        except Exception as e:
+            logger.warning("Ошибка получения списка чатов из БД: %s", e)
+            return []
+
+    def save_selected_chats(self, chats: List[Tuple[int, str]]) -> None:
+        """Сохранить выбранные чаты в БД.
+        
+        Parameters
+        ----------
+        chats : List[Tuple[int, str]]
+            Список кортежей (chat_id, title)
+        """
+        if not self.enabled:
+            return
+        try:
+            for chat_id, title in chats:
+                self.ensure_chat_in_db(chat_id, title)
+            logger.info("Сохранено %s чатов в БД", len(chats))
+        except Exception as e:
+            logger.warning("Ошибка сохранения чатов в БД: %s", e)
+
     def get_last_processed_message_id(self, chat_id: int) -> Optional[int]:
         """Получить максимальный message_id для чата из БД.
-        
+
         Parameters
         ----------
         chat_id : int
             ID чата
-            
+
         Returns
         -------
         Optional[int]
@@ -956,14 +998,14 @@ class ClickHouseMetadataDB:
 
     def get_retry_message_ids(self, chat_id: int, limit: int = 1000) -> List[int]:
         """Получить список message_id для повторной загрузки из file_downloads.
-        
+
         Parameters
         ----------
         chat_id : int
             ID чата
         limit : int
             Максимальное количество записей (по умолчанию 1000)
-            
+
         Returns
         -------
         List[int]
@@ -975,9 +1017,9 @@ class ClickHouseMetadataDB:
             client = self._get_client()
             rows = client.execute(
                 """
-                SELECT message_id 
-                FROM file_downloads 
-                WHERE chat_id = %(chat_id)s 
+                SELECT message_id
+                FROM file_downloads
+                WHERE chat_id = %(chat_id)s
                   AND status IN ('failed', 'skipped')
                 ORDER BY created_at DESC
                 LIMIT %(limit)s
