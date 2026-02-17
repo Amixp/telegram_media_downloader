@@ -301,16 +301,21 @@ class ClickHouseMetadataDB:
             return []
         try:
             client = self._get_client()
-            pref = "if(file_path != '', 1, 0)"
             rows = client.execute(
-                f"""
-                SELECT chat_id, message_id, argMax(date, {pref}) AS date, argMax(text, {pref}) AS text,
-                    argMax(media_type, {pref}) AS media_type, argMax(file_path, {pref}) AS file_path,
-                    argMax(file_size, {pref}) AS file_size, argMax(sender_id, {pref}) AS sender_id,
-                    argMax(chat_title, {pref}) AS chat_title, argMax(entities, {pref}) AS entities
-                FROM messages
-                WHERE chat_id = %(chat_id)s
-                GROUP BY chat_id, message_id
+                """
+                SELECT chat_id, message_id, date, text, media_type, file_path, file_size,
+                    sender_id, chat_title, entities
+                FROM (
+                    SELECT chat_id, message_id, date, text, media_type, file_path, file_size,
+                        sender_id, chat_title, entities,
+                        row_number() OVER (
+                            PARTITION BY chat_id, message_id
+                            ORDER BY if(file_path != '', 1, 0) DESC, date DESC
+                        ) AS rn
+                    FROM messages
+                    WHERE chat_id = %(chat_id)s
+                )
+                WHERE rn = 1
                 ORDER BY date, message_id
                 """,
                 {"chat_id": chat_id},
@@ -437,16 +442,21 @@ class ClickHouseMetadataDB:
             )
             total = int(total_rows[0][0]) if total_rows else 0
 
-            pref = "if(file_path != '', 1, 0)"
             rows = client.execute(
                 f"""
-                SELECT chat_id, message_id, argMax(date, {pref}) AS date, argMax(text, {pref}) AS text,
-                    argMax(media_type, {pref}) AS media_type, argMax(file_path, {pref}) AS file_path,
-                    argMax(file_size, {pref}) AS file_size, argMax(sender_id, {pref}) AS sender_id,
-                    argMax(chat_title, {pref}) AS chat_title, argMax(entities, {pref}) AS entities
-                FROM messages
-                WHERE chat_id = %(chat_id)s
-                GROUP BY chat_id, message_id
+                SELECT chat_id, message_id, date, text, media_type, file_path, file_size,
+                    sender_id, chat_title, entities
+                FROM (
+                    SELECT chat_id, message_id, date, text, media_type, file_path, file_size,
+                        sender_id, chat_title, entities,
+                        row_number() OVER (
+                            PARTITION BY chat_id, message_id
+                            ORDER BY if(file_path != '', 1, 0) DESC, date DESC
+                        ) AS rn
+                    FROM messages
+                    WHERE chat_id = %(chat_id)s
+                )
+                WHERE rn = 1
                 ORDER BY date, message_id
                 LIMIT {limit} OFFSET {offset}
                 """,

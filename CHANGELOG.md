@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Веб-архив: сообщения чата не открывались (ClickHouse 184)**
+  - Запросы `get_messages_for_chat` и `get_messages_page` переписаны: вместо `argMax(..., if(file_path != '', 1, 0))` используется подзапрос с `row_number() OVER (PARTITION BY chat_id, message_id ORDER BY ...)`. Устранена ошибка «агрегатная функция внутри другой агрегатной функции» в новых версиях ClickHouse.
+
 ### Added
 - **Веб-архив: форматирование текста и entities**
   - Колонка `entities` (JSON) в таблице `messages` — сохранение bold, italic, code, pre, spoiler, hashtag, url, text_url.
