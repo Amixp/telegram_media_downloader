@@ -9,11 +9,12 @@ import {
   FolderOpen,
   History,
   Image,
+  MessageCircle,
   Music,
   Search,
   Zap,
 } from "lucide-react";
-import { Component, useCallback, useEffect, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Virtuoso } from "react-virtuoso";
 import {
@@ -354,6 +355,7 @@ const ChatViewer = ({
   initialMessageId,
   chats = [],
   onOpenChat,
+  embedded = false,
 }) => {
   const [items, setItems] = useState([]);
   const [startOffset, setStartOffset] = useState(0);
@@ -567,27 +569,39 @@ const ChatViewer = ({
     : items;
 
   const handleBackdropClick = (e) => {
-    if (e.target === e.currentTarget) onClose();
+    if (!embedded && e.target === e.currentTarget && onClose) onClose();
   };
 
+  const containerClass = embedded
+    ? "flex flex-col flex-1 min-h-0 rounded-lg border border-slate-700/50 overflow-hidden"
+    : "glass-card flex flex-col max-w-4xl w-full max-h-[95vh]";
+  const wrapperClass = embedded
+    ? "flex flex-col flex-1 min-h-0"
+    : "fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4";
+
   if (loading && items.length === 0) {
+    const loadingOuterClass = embedded
+      ? "flex flex-col flex-1 min-h-0 rounded-lg border border-slate-700/50 p-8"
+      : "fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm";
     return (
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
-        onClick={handleBackdropClick}
+        className={loadingOuterClass}
+        {...(!embedded && { onClick: handleBackdropClick })}
       >
         <div
-          className="glass-card p-8 max-w-4xl w-full mx-4 max-h-[95vh] flex flex-col"
-          onClick={(e) => e.stopPropagation()}
+          className={embedded ? "flex flex-col flex-1" : "glass-card p-8 max-w-4xl w-full mx-4 max-h-[95vh] flex flex-col"}
+          {...(!embedded && { onClick: (e) => e.stopPropagation() })}
         >
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-white">{title}</h2>
-            <button
-              onClick={onClose}
-              className="p-2 text-slate-400 hover:text-white rounded"
-            >
-              <ChevronLeft size={20} />
-            </button>
+            {!embedded && onClose && (
+              <button
+                onClick={onClose}
+                className="p-2 text-slate-400 hover:text-white rounded"
+              >
+                <ChevronLeft size={20} />
+              </button>
+            )}
           </div>
           <p className="text-slate-400 text-center py-12">
             Загрузка сообщений…
@@ -599,23 +613,25 @@ const ChatViewer = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-      onClick={handleBackdropClick}
+      className={wrapperClass}
+      {...(!embedded && { onClick: handleBackdropClick })}
     >
       <div
-        className="glass-card flex flex-col max-w-4xl w-full max-h-[95vh]"
-        onClick={(e) => e.stopPropagation()}
+        className={containerClass}
+        {...(!embedded && { onClick: (e) => e.stopPropagation() })}
       >
         <div className="flex items-center justify-between p-4 border-b border-slate-700/50 shrink-0">
           <h2 className="text-xl font-bold text-white truncate pr-4">
             {title}
           </h2>
-          <button
-            onClick={onClose}
-            className="p-2 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 transition-colors"
-          >
-            <ChevronLeft size={20} />
-          </button>
+          {!embedded && onClose && (
+            <button
+              onClick={onClose}
+              className="p-2 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 transition-colors"
+            >
+              <ChevronLeft size={20} />
+            </button>
+          )}
         </div>
         <div className="px-4 py-2 border-b border-slate-700/30 shrink-0 flex items-center gap-2">
           <Search size={14} className="text-slate-500 shrink-0" />
@@ -699,7 +715,7 @@ const ChatViewer = ({
         <div className="flex-1 min-h-0 relative">
           <Virtuoso
             ref={virtuosoRef}
-            style={{ height: "100%", minHeight: 520 }}
+            style={{ height: "100%", minHeight: embedded ? 320 : 520 }}
             data={filteredItems}
             firstItemIndex={searchQuery.trim() ? 0 : firstItemIndex}
             startReached={loadMoreTop}
@@ -1369,10 +1385,152 @@ const FilesView = ({ enabled, chatList }) => {
   );
 };
 
+const CHATS_DEBOUNCE_MS = 300;
+
+const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
+  const [selectedChat, setSelectedChat] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const debouncedQuery = useDebounce(searchQuery, CHATS_DEBOUNCE_MS);
+
+  const filteredChats = useMemo(() => {
+    const q = (debouncedQuery || "").trim().toLowerCase();
+    if (!q) return chatList;
+    return chatList.filter(
+      (c) =>
+        (c.title || "").toLowerCase().includes(q) ||
+        String(c.chat_id || "").includes(q),
+    );
+  }, [chatList, debouncedQuery]);
+
+  const handleOpenChat = useCallback(
+    (payload) => {
+      const found = chatList.find((c) => c.chat_id === payload.chat_id);
+      if (found) {
+        setSelectedChat({
+          chat_id: payload.chat_id,
+          title: payload.title ?? found.title ?? `Chat ${payload.chat_id}`,
+          initialMessageId: payload.initialMessageId,
+        });
+      }
+    },
+    [chatList],
+  );
+
+  if (!enabled) {
+    return (
+      <section className="glass-card p-6">
+        <h3 className="card-title text-white">
+          <MessageCircle size={18} className="text-sky-400" /> Чаты
+        </h3>
+        <p className="text-slate-400 mt-4">
+          Включите ClickHouse в config.yaml для просмотра чатов.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="glass-card p-6 flex flex-col min-h-0 flex-1">
+      <h3 className="card-title text-white shrink-0">
+        <MessageCircle size={18} className="text-sky-400" /> Чаты
+      </h3>
+      <div className="mt-4 flex flex-wrap gap-2 items-center shrink-0">
+        <Search size={14} className="text-slate-500 shrink-0" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Поиск по названию чата…"
+          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500/50 w-48 md:w-64"
+        />
+        {typeof onRefresh === "function" && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="flex items-center gap-2 px-3 py-1.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-sm"
+          >
+            Обновить
+          </button>
+        )}
+      </div>
+      <div className="mt-4 flex flex-1 min-h-0 gap-4 flex-col md:flex-row">
+        <div className="flex flex-col min-w-[200px] md:min-w-[280px] md:w-[280px] shrink-0">
+          <div className="flex-1 min-h-0 overflow-y-auto rounded-lg border border-slate-700/50 bg-slate-800/30">
+            {filteredChats.length === 0 ? (
+              <p className="p-4 text-slate-500 text-sm">
+                {chatList.length === 0
+                  ? "Нет чатов в архиве"
+                  : "Нет совпадений по поиску"}
+              </p>
+            ) : (
+              filteredChats.map((chat) => (
+                <div
+                  key={chat.chat_id}
+                  onClick={() =>
+                    setSelectedChat({
+                      chat_id: chat.chat_id,
+                      title: chat.title || `Chat ${chat.chat_id}`,
+                    })
+                  }
+                  className={`p-3 border-b border-slate-700/30 cursor-pointer transition-colors ${
+                    selectedChat?.chat_id === chat.chat_id
+                      ? "bg-sky-900/40 border-sky-500/50"
+                      : "hover:bg-slate-800/50"
+                  }`}
+                >
+                  <p className="text-sm font-bold text-white truncate">
+                    {chat.title || `Chat ${chat.chat_id}`}
+                  </p>
+                  <p className="text-[10px] text-slate-400 font-medium mt-0.5">
+                    {chat.size != null
+                      ? `${(chat.size / (1024 * 1024 * 1024)).toFixed(2)} GB`
+                      : ""}{" "}
+                    {chat.count != null ? `• ${chat.count} msgs` : ""}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+        <div className="flex-1 min-h-0 flex flex-col">
+          {selectedChat ? (
+            <>
+              <div className="flex items-center gap-2 shrink-0 mb-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedChat(null)}
+                  className="px-2 py-1 rounded bg-slate-700/50 text-slate-400 hover:text-white text-sm"
+                >
+                  Очистить выбор
+                </button>
+              </div>
+              <div className="flex-1 min-h-0">
+                <ChatViewer
+                  chatId={selectedChat.chat_id}
+                  title={selectedChat.title}
+                  initialMessageId={selectedChat.initialMessageId}
+                  chats={chatList}
+                  onOpenChat={handleOpenChat}
+                  embedded={true}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center rounded-lg border border-slate-700/50 bg-slate-800/20 min-h-[320px]">
+              <p className="text-slate-500">Выберите чат</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+};
+
 const TABS = [
   { id: "progress", label: "Прогресс", icon: Zap },
   { id: "logs", label: "Логи", icon: FileText },
   { id: "files", label: "Файлы", icon: FolderOpen },
+  { id: "chats", label: "Чаты", icon: MessageCircle },
 ];
 
 const Dashboard = () => {
@@ -1671,6 +1829,13 @@ const Dashboard = () => {
         <FilesView
           enabled={stats?.enabled && stats?.connected}
           chatList={stats?.chats || []}
+        />
+      )}
+      {activeTab === "chats" && (
+        <ChatsView
+          enabled={stats?.enabled && stats?.connected}
+          chatList={stats?.chats || []}
+          onRefresh={fetchStats}
         />
       )}
 

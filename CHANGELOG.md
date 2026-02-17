@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Удаление одного или всех чатов из архива для повторной загрузки.
   - Опции: `--chat-id ID`, `--all`, `--delete-media`, `--dry-run`, `--yes`.
   - Удаляет: сброс в config (last_read_message_id, ids_to_retry), JSONL, HTML, ClickHouse; опционально медиафайлы.
+- **Вкладка «Чаты» в веб-дашборде**
+  - Новая вкладка «Чаты» в навигации (Прогресс | Логи | Файлы | Чаты).
+  - Split-вид: слева — список чатов с поиском по названию, справа — полнофункциональный просмотр сообщений (ChatViewer embedded).
+  - ChatViewer поддерживает embedded-режим (без модального окна), используется во вкладке Чаты и в прогресс-карточках.
 - **Улучшение антифрод-системы при GetFileRequest flood**
   - `download_settings.request_retries` (по умолчанию 15): кол-во ретраев Telethon при FloodWait; при 5 (дефолт Telethon) GetFileRequest быстро исчерпывает лимит.
   - `download_settings.inter_chunk_delay_sec` (по умолчанию 0.5): пауза между чанками загрузки — снижает частоту запросов и flood wait.
