@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 from datetime import datetime
@@ -151,6 +152,25 @@ class ClickHouseMetadataDB:
         except Exception as e:
             logger.warning("Миграция file_hash (возможно уже применена): %s", e)
 
+        # Миграция: колонка entities для форматирования текста
+        try:
+            client.execute(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS entities String DEFAULT ''"
+            )
+        except Exception as e:
+            logger.warning("Миграция entities (возможно уже применена): %s", e)
+
+        # Миграция: описание и username чата
+        try:
+            client.execute(
+                "ALTER TABLE chats ADD COLUMN IF NOT EXISTS description String DEFAULT ''"
+            )
+            client.execute(
+                "ALTER TABLE chats ADD COLUMN IF NOT EXISTS username String DEFAULT ''"
+            )
+        except Exception as e:
+            logger.warning("Миграция chats description/username (возможно уже применена): %s", e)
+
     async def save_message(self, data: Dict[str, Any]):
         """
         Добавить сообщение в буфер для пакетной вставки.
@@ -184,7 +204,7 @@ class ClickHouseMetadataDB:
         client = self._get_client()
         query = (
             "INSERT INTO messages (chat_id, message_id, date, text, media_type, "
-            "file_path, file_size, downloaded, download_date, sender_id, chat_title, file_hash) VALUES"
+            "file_path, file_size, downloaded, download_date, sender_id, chat_title, file_hash, entities) VALUES"
         )
         def _str(v: Any) -> str:
             return "" if v is None else str(v)
@@ -203,12 +223,21 @@ class ClickHouseMetadataDB:
                 m.get("sender_id", 0),
                 _str(m.get("chat_title")),
                 _str(m.get("file_hash", "")),
+                _str(m.get("entities", "")),
             )
             for m in messages
         ]
         client.execute(query, data)
 
-    async def update_chat_info(self, chat_id: int, title: str, message_count: int, total_size: int = 0):
+    async def update_chat_info(
+        self,
+        chat_id: int,
+        title: str,
+        message_count: int,
+        total_size: int = 0,
+        description: Optional[str] = None,
+        username: Optional[str] = None,
+    ):
         """Обновить информацию о чате."""
         if not self.enabled:
             return
@@ -218,17 +247,29 @@ class ClickHouseMetadataDB:
             await loop.run_in_executor(
                 None,
                 self._insert_chat,
-                chat_id, title, message_count, total_size
+                chat_id, title, message_count, total_size, description, username
             )
         except Exception as e:
             logger.error(f"Ошибка при обновлении информации о чате в ClickHouse: {e}")
 
-    def _insert_chat(self, chat_id, title, message_count, total_size):
+    def _insert_chat(
+        self,
+        chat_id: int,
+        title: str,
+        message_count: int,
+        total_size: int,
+        description: Optional[str] = None,
+        username: Optional[str] = None,
+    ):
         client = self._get_client()
-        query = "INSERT INTO chats (chat_id, title, last_sync, message_count, total_size) VALUES"
+        desc = "" if description is None else str(description)
+        uname = "" if username is None else str(username)
+        query = (
+            "INSERT INTO chats (chat_id, title, last_sync, message_count, total_size, description, username) VALUES"
+        )
         client.execute(
             query,
-            [(chat_id, "" if title is None else str(title), datetime.now(), message_count, total_size)],
+            [(chat_id, "" if title is None else str(title), datetime.now(), message_count, total_size, desc, uname)],
         )
 
     def get_existing_message_ids(self, chat_id: int, message_ids: List[int]) -> Set[int]:
@@ -254,22 +295,39 @@ class ClickHouseMetadataDB:
         """
         Вернуть все сообщения чата в формате, совместимом с JSONL/HTML
         (id, date, text, downloaded_file, media_type, has_media, ...).
+        При дублях (chat_id, message_id) оставляется запись с file_path.
         """
         if not self.enabled:
             return []
         try:
             client = self._get_client()
+            pref = "if(file_path != '', 1, 0)"
             rows = client.execute(
-                "SELECT chat_id, message_id, date, text, media_type, file_path, file_size, sender_id, chat_title "
-                "FROM messages WHERE chat_id = %(chat_id)s ORDER BY date, message_id",
+                f"""
+                SELECT chat_id, message_id, argMax(date, {pref}) AS date, argMax(text, {pref}) AS text,
+                    argMax(media_type, {pref}) AS media_type, argMax(file_path, {pref}) AS file_path,
+                    argMax(file_size, {pref}) AS file_size, argMax(sender_id, {pref}) AS sender_id,
+                    argMax(chat_title, {pref}) AS chat_title, argMax(entities, {pref}) AS entities
+                FROM messages
+                WHERE chat_id = %(chat_id)s
+                GROUP BY chat_id, message_id
+                ORDER BY date, message_id
+                """,
                 {"chat_id": chat_id},
             )
             result: List[Dict[str, Any]] = []
             for row in rows:
-                (r_chat_id, msg_id, date_val, text_val, media_type_val, file_path_val, file_size_val, sender_val, title_val) = row
+                entities_val = row[9] if len(row) > 9 else ""
+                (r_chat_id, msg_id, date_val, text_val, media_type_val, file_path_val, file_size_val, sender_val, title_val) = row[:9]
                 date_iso = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val)
                 media_type_str = "" if media_type_val is None else str(media_type_val)
                 has_media = bool(media_type_str and media_type_str != "None")
+                entities_parsed = []
+                if entities_val and isinstance(entities_val, str) and entities_val.strip():
+                    try:
+                        entities_parsed = json.loads(entities_val)
+                    except Exception:
+                        pass
                 result.append({
                     "id": msg_id,
                     "chat_id": r_chat_id,
@@ -281,11 +339,41 @@ class ClickHouseMetadataDB:
                     "media_type": media_type_str,
                     "file_size": file_size_val or 0,
                     "downloaded_file": (file_path_val or "").strip() or None,
+                    "entities": entities_parsed,
                 })
             return result
         except Exception as e:
             logger.warning("Ошибка чтения сообщений из ClickHouse: %s", e)
             return []
+
+    def get_chat_meta(self, chat_id: int) -> Dict[str, Any]:
+        """
+        Получить метаданные чата (description, username, profile_link) из таблицы chats.
+        """
+        if not self.enabled:
+            return {"description": "", "username": "", "profile_link": ""}
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                "SELECT description, username FROM chats WHERE chat_id = %(chat_id)s LIMIT 1",
+                {"chat_id": chat_id},
+            )
+            desc = ""
+            username = ""
+            if rows:
+                desc = (rows[0][0] or "").strip()
+                username = (rows[0][1] or "").strip() if len(rows[0]) > 1 else ""
+            if username:
+                profile_link = f"https://t.me/{username}"
+            elif chat_id < -100:
+                cid = str(chat_id).replace("-100", "")
+                profile_link = f"https://t.me/c/{cid}"
+            else:
+                profile_link = ""
+            return {"description": desc, "username": username, "profile_link": profile_link}
+        except Exception as e:
+            logger.warning("Ошибка чтения chat_meta из ClickHouse: %s", e)
+            return {"description": "", "username": "", "profile_link": ""}
 
     def get_chats_manifest(
         self,
@@ -299,8 +387,12 @@ class ClickHouseMetadataDB:
         try:
             client = self._get_client()
             rows = client.execute("""
-                SELECT chat_id, any(chat_title) AS title, count() AS cnt, max(date) AS last_date
-                FROM messages
+                SELECT chat_id, any(chat_title) AS title, count() AS cnt, max(d) AS last_date
+                FROM (
+                    SELECT chat_id, message_id, any(chat_title) AS chat_title, max(date) AS d
+                    FROM messages
+                    GROUP BY chat_id, message_id
+                )
                 GROUP BY chat_id
                 ORDER BY last_date DESC
             """)
@@ -340,19 +432,29 @@ class ClickHouseMetadataDB:
         try:
             client = self._get_client()
             total_rows = client.execute(
-                "SELECT count() FROM messages WHERE chat_id = %(chat_id)s",
+                "SELECT count() FROM (SELECT 1 FROM messages WHERE chat_id = %(chat_id)s GROUP BY chat_id, message_id)",
                 {"chat_id": chat_id},
             )
             total = int(total_rows[0][0]) if total_rows else 0
 
+            pref = "if(file_path != '', 1, 0)"
             rows = client.execute(
-                "SELECT chat_id, message_id, date, text, media_type, file_path, file_size, sender_id, chat_title "
-                "FROM messages WHERE chat_id = %(chat_id)s ORDER BY date, message_id "
-                f"LIMIT {limit} OFFSET {offset}",
+                f"""
+                SELECT chat_id, message_id, argMax(date, {pref}) AS date, argMax(text, {pref}) AS text,
+                    argMax(media_type, {pref}) AS media_type, argMax(file_path, {pref}) AS file_path,
+                    argMax(file_size, {pref}) AS file_size, argMax(sender_id, {pref}) AS sender_id,
+                    argMax(chat_title, {pref}) AS chat_title, argMax(entities, {pref}) AS entities
+                FROM messages
+                WHERE chat_id = %(chat_id)s
+                GROUP BY chat_id, message_id
+                ORDER BY date, message_id
+                LIMIT {limit} OFFSET {offset}
+                """,
                 {"chat_id": chat_id},
             )
             result: List[Dict[str, Any]] = []
             for row in rows:
+                entities_val = row[9] if len(row) > 9 else ""
                 (
                     r_chat_id,
                     msg_id,
@@ -363,10 +465,16 @@ class ClickHouseMetadataDB:
                     file_size_val,
                     sender_val,
                     title_val,
-                ) = row
+                ) = row[:9]
                 date_iso = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val)
                 media_type_str = "" if media_type_val is None else str(media_type_val)
                 has_media = bool(media_type_str and media_type_str != "None")
+                entities_parsed = []
+                if entities_val and isinstance(entities_val, str) and entities_val.strip():
+                    try:
+                        entities_parsed = json.loads(entities_val)
+                    except Exception:
+                        pass
                 result.append({
                     "id": msg_id,
                     "chat_id": r_chat_id,
@@ -378,6 +486,7 @@ class ClickHouseMetadataDB:
                     "media_type": media_type_str,
                     "file_size": file_size_val or 0,
                     "downloaded_file": (file_path_val or "").strip() or None,
+                    "entities": entities_parsed,
                 })
             return result, total
         except Exception as e:
@@ -391,21 +500,33 @@ class ClickHouseMetadataDB:
         Получить путь к файлу сообщения по chat_id и message_id.
         Возвращает None, если запись не найдена или file_path пустой.
         """
+        path, _ = self.get_message_file_path_and_media_type(chat_id, message_id)
+        return path
+
+    def get_message_file_path_and_media_type(
+        self, chat_id: int, message_id: int
+    ) -> Tuple[Optional[str], str]:
+        """
+        Получить (путь к файлу, media_type) по chat_id и message_id.
+        Возвращает (None, "") если запись не найдена или file_path пустой.
+        """
         if not self.enabled:
-            return None
+            return None, ""
         try:
             client = self._get_client()
             rows = client.execute(
-                "SELECT file_path FROM messages WHERE chat_id = %(chat_id)s AND message_id = %(message_id)s LIMIT 1",
+                "SELECT file_path, media_type FROM messages WHERE chat_id = %(chat_id)s AND message_id = %(message_id)s "
+                "ORDER BY if(file_path != '', 1, 0) DESC LIMIT 1",
                 {"chat_id": chat_id, "message_id": message_id},
             )
             if not rows:
-                return None
+                return None, ""
             path = (rows[0][0] or "").strip()
-            return path if path else None
+            media_type = (rows[0][1] or "").strip() if len(rows[0]) > 1 else ""
+            return (path if path else None), media_type
         except Exception as e:
-            logger.warning("Ошибка чтения file_path из ClickHouse: %s", e)
-            return None
+            logger.warning("Ошибка чтения file_path/media_type из ClickHouse: %s", e)
+            return None, ""
 
     def get_message_file_info(
         self, chat_id: int, message_id: int

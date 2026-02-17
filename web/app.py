@@ -261,6 +261,22 @@ async def get_files(
     return {"items": items, "total": total}
 
 
+@app.get("/api/chat/{chat_id}/info")
+async def get_chat_info(chat_id: int):
+    """Метаданные чата: description, profile_link."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        return {"description": "", "profile_link": ""}
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    loop = asyncio.get_event_loop()
+    meta = await loop.run_in_executor(None, lambda: db.get_chat_meta(chat_id))
+    return {"description": meta.get("description", ""), "profile_link": meta.get("profile_link", "")}
+
+
 @app.get("/api/chat/{chat_id}/messages")
 async def get_chat_messages(
     chat_id: int,
@@ -312,38 +328,54 @@ def _path_under_base(file_path: str, base_directory: str) -> bool:
         return False
 
 
+def _guess_media_type(file_path: str, ch_media_type: str) -> str:
+    """Определить MIME-тип: из CH (photo/video) или по расширению."""
+    if ch_media_type:
+        mt = ch_media_type.lower()
+        if mt == "photo":
+            return "image/jpeg"
+        if mt in ("video", "video_note"):
+            return "video/mp4"
+        if mt in ("audio", "voice"):
+            return "audio/mpeg"
+    import mimetypes
+    guessed, _ = mimetypes.guess_type(file_path)
+    return guessed or "application/octet-stream"
+
+
 @app.get("/api/chat/{chat_id}/message/{message_id}/file")
 async def get_message_file(chat_id: int, message_id: int):
     """Раздача файла сообщения по chat_id и message_id. Путь проверяется относительно base_directory."""
+    from fastapi import HTTPException
     from utils.config import ConfigManager
     config = ConfigManager().load()
     ch_config = config.get("clickhouse", {})
     if not ch_config.get("enabled"):
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="ClickHouse disabled")
 
     from utils.clickhouse_db import ClickHouseMetadataDB
     db = ClickHouseMetadataDB(ch_config)
     loop = asyncio.get_event_loop()
-    file_path = await loop.run_in_executor(
+    file_path, ch_media_type = await loop.run_in_executor(
         None,
-        lambda: db.get_message_file_path(chat_id, message_id),
+        lambda: db.get_message_file_path_and_media_type(chat_id, message_id),
     )
     if not file_path:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Message or file not found")
 
     base_dir = _get_base_directory()
     if not _path_under_base(file_path, base_dir):
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="File path not allowed")
 
     if not os.path.isfile(file_path):
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     filename = os.path.basename(file_path)
-    return FileResponse(file_path, filename=filename, media_type="application/octet-stream")
+    media_type = _guess_media_type(file_path, ch_media_type)
+    is_inline = media_type.startswith("image/") or media_type.startswith("video/")
+    disposition = "inline" if is_inline else "attachment"
+    headers = {"Content-Disposition": f'{disposition}; filename="{filename}"'}
+    return FileResponse(file_path, filename=filename, media_type=media_type, headers=headers)
 
 
 @app.get("/api/chat/{chat_id}/message/{message_id}/path")
@@ -415,6 +447,26 @@ async def open_message_folder(chat_id: int, message_id: int, request: Request):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     return {"ok": True}
+
+
+class AddChatRequest(BaseModel):
+    """Тело запроса POST /api/chats/add."""
+    chat_id: int
+    title: Optional[str] = None
+
+
+@app.post("/api/chats/add")
+async def add_chat_to_downloads(body: AddChatRequest):
+    """Добавить чат в список загрузок."""
+    from utils.config import ConfigManager
+    cm = ConfigManager()
+    config = cm.load()
+    try:
+        added = cm.add_chat_to_download_list(body.chat_id, body.title)
+        cm.save()
+        return {"added": added, "message": "Чат добавлен" if added else "Чат уже в списке"}
+    except Exception as e:
+        return {"added": False, "message": str(e)}
 
 
 @app.get("/api/settings")

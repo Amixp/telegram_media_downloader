@@ -1,5 +1,6 @@
 "Модуль загрузчика медиа."
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -77,6 +78,8 @@ class DownloadManager:
         self.web_app = None # Will be set if web server is running
         # Кэш последнего description для web progress, чтобы не спамить одним и тем же
         self._web_last_description: Dict[str, str] = {}
+        # Метаданные чата (description, username) для CH, ключ — chat_id
+        self._chat_entity_meta: Dict[int, Dict[str, str]] = {}
 
         # Настроить логирование
         configure_logging(self.config)
@@ -1191,6 +1194,19 @@ class DownloadManager:
                         fhash = get_file_hash(file_path)
                     except (OSError, IOError):
                         pass
+                entities_json = ""
+                if hasattr(message, "entities") and message.entities:
+                    entities_list = []
+                    for entity in message.entities:
+                        ent = {
+                            "offset": entity.offset,
+                            "length": entity.length,
+                            "type": type(entity).__name__,
+                        }
+                        if hasattr(entity, "url") and entity.url:
+                            ent["url"] = entity.url
+                        entities_list.append(ent)
+                    entities_json = json.dumps(entities_list, ensure_ascii=False)
                 msg_data = {
                     "chat_id": _chat_id,
                     "message_id": message.id,
@@ -1202,17 +1218,21 @@ class DownloadManager:
                     "sender_id": message.sender_id or 0,
                     "chat_title": chat_title or "",
                     "file_hash": fhash,
+                    "entities": entities_json,
                 }
                 await self.clickhouse_db.save_message(msg_data)
 
             # Обновить информацию о чате
             # Считаем общее количество сообщений и размер (приблизительно для текущего пакета)
             current_chat_size = sum(self._get_file_size(m) for m in messages)
+            meta = self._chat_entity_meta.get(_chat_id, {})
             await self.clickhouse_db.update_chat_info(
                 _chat_id,
                 chat_title or f"Chat {_chat_id}",
                 len(messages),
-                current_chat_size
+                current_chat_size,
+                description=meta.get("description") or None,
+                username=meta.get("username") or None,
             )
             await self.clickhouse_db.flush()
 
@@ -1481,6 +1501,22 @@ class DownloadManager:
             except Exception:
                 # Фолбэк: не ломаем загрузку из-за проблем с FS
                 pass
+
+        # Получить entity чата для description и username (каналы/супергруппы)
+        try:
+            entity = await client.get_entity(chat_id)
+            desc = ""
+            uname = ""
+            from telethon.tl.types import Channel, Chat
+            if isinstance(entity, Channel):
+                desc = getattr(entity, "about", None) or ""
+                uname = getattr(entity, "username", None) or ""
+            elif isinstance(entity, Chat):
+                desc = getattr(entity, "about", None) or ""
+            if desc or uname:
+                self._chat_entity_meta[chat_id] = {"description": desc or "", "username": uname or ""}
+        except Exception as e:
+            logger.debug("Не удалось получить entity чата %s: %s", chat_id, e)
 
         try:
             messages_iter = client.iter_messages(

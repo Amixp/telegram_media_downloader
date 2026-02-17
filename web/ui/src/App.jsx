@@ -95,14 +95,37 @@ const FlowerLoader = ({ size = 28, className = "", color = "amber" }) => {
   );
 };
 
+// Регекс для t.me ссылок
+const T_ME_RE =
+  /(https?:\/\/)?(?:www\.)?t\.me\/(c\/(\d+)(?:\/(\d+))?|([a-zA-Z0-9_]+)(?:\/(\d+))?)/gi;
+
+function findTmeMatch(raw, href, chats) {
+  const m = T_ME_RE.exec(href || raw);
+  if (!m) return null;
+  const channelId = m[3];
+  const postId = m[4] || m[6] || null;
+  const username = m[5];
+  let matchedChat = null;
+  if (channelId && Array.isArray(chats)) {
+    const idNorm = String(channelId).replace(/^-100/, "");
+    matchedChat = chats.find(
+      (c) => String(c.chat_id).replace(/^-100/, "") === idNorm,
+    );
+  }
+  return {
+    href: href || (m[0].match(/^https?:/i) ? m[0] : `https://t.me/${m[2]}`),
+    matchedChat,
+    postId: postId ? parseInt(postId, 10) : null,
+    username: username || null,
+  };
+}
+
 // Парсит текст сообщения на сегменты: текст и ссылки t.me (c/ID, username).
-// Возвращает массив { type: 'text'|'link', value?, href?, matchedChat?, postId? }.
 function parseTelegramLinks(text, chats) {
   if (!text || typeof text !== "string")
     return [{ type: "text", value: text || "" }];
   const segments = [];
-  const re =
-    /(https?:\/\/)?(?:www\.)?t\.me\/(c\/(\d+)(?:\/(\d+))?|([a-zA-Z0-9_]+)(?:\/(\d+))?)/gi;
+  const re = new RegExp(T_ME_RE.source, "gi");
   let lastIndex = 0;
   let m;
   while ((m = re.exec(text)) !== null) {
@@ -110,29 +133,218 @@ function parseTelegramLinks(text, chats) {
       segments.push({ type: "text", value: text.slice(lastIndex, m.index) });
     const raw = m[0];
     const href = /^https?:/i.test(raw) ? raw : `https://t.me/${m[2]}`;
-    const channelId = m[3];
-    const postId = m[4] || m[6] || null;
-    const username = m[5];
-    let matchedChat = null;
-    if (channelId && Array.isArray(chats)) {
-      const idNorm = String(channelId).replace(/^-100/, "");
-      matchedChat = chats.find(
-        (c) => String(c.chat_id).replace(/^-100/, "") === idNorm,
-      );
-    }
+    const tme = findTmeMatch(raw, href, chats);
     segments.push({
       type: "link",
       value: raw,
       href,
-      matchedChat,
-      postId: postId ? parseInt(postId, 10) : null,
-      username: username || null,
+      matchedChat: tme?.matchedChat ?? null,
+      postId: tme?.postId ?? null,
+      username: tme?.username ?? null,
     });
     lastIndex = re.lastIndex;
   }
   if (lastIndex < text.length)
     segments.push({ type: "text", value: text.slice(lastIndex) });
   return segments.length ? segments : [{ type: "text", value: text }];
+}
+
+// Форматирует текст с entities: bold, italic, code, pre, spoiler, hashtag, url, text_url.
+// Возвращает массив React-элементов.
+function formatMessageText(
+  text,
+  entities,
+  chats,
+  { onOpenChat, onAddChat, onFilterByHashtag } = {},
+) {
+  if (!text || typeof text !== "string") return [text || ""];
+  const ent = Array.isArray(entities) ? entities : [];
+  if (ent.length === 0) {
+    return parseTelegramLinks(text, chats).map((seg, i) =>
+      seg.type === "text" ? (
+        seg.value
+      ) : seg.matchedChat ? (
+        <a
+          key={i}
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            onOpenChat?.({
+              chat_id: seg.matchedChat.chat_id,
+              title: seg.matchedChat.title,
+              initialMessageId: seg.postId ?? undefined,
+            });
+          }}
+          className="text-emerald-400 hover:underline"
+        >
+          {seg.value}
+        </a>
+      ) : (
+        <a
+          key={i}
+          href={seg.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sky-400 hover:underline"
+        >
+          {seg.value}
+        </a>
+      ),
+    );
+  }
+
+  // Сортируем entities: по offset, затем по -length (внешние первыми)
+  const sorted = [...ent]
+    .filter((e) => e && e.offset >= 0 && e.length > 0)
+    .sort((a, b) => a.offset - b.offset || b.length - a.length);
+
+  const boundaries = new Set([0, text.length]);
+  for (const e of sorted) {
+    if (e.offset < text.length) boundaries.add(e.offset);
+    if (e.offset + e.length <= text.length) boundaries.add(e.offset + e.length);
+  }
+  const bArr = [...boundaries].sort((a, b) => a - b);
+
+  const out = [];
+  for (let i = 0; i < bArr.length - 1; i++) {
+    const start = bArr[i];
+    const end = bArr[i + 1];
+    const segText = text.slice(start, end);
+    if (!segText) continue;
+
+    const covering = sorted.filter(
+      (e) => e.offset <= start && e.offset + e.length >= end,
+    );
+    const entity = covering.sort((a, b) => a.length - b.length)[0];
+
+    const wrap = (content, key) => {
+      if (!entity) return content;
+      const t = entity.type || "";
+      if (t === "MessageEntityBold")
+        return <strong key={key}>{content}</strong>;
+      if (t === "MessageEntityItalic") return <em key={key}>{content}</em>;
+      if (t === "MessageEntityCode")
+        return (
+          <code
+            key={key}
+            className="px-1 py-0.5 rounded bg-slate-700/80 text-amber-200 text-[0.9em]"
+          >
+            {content}
+          </code>
+        );
+      if (t === "MessageEntityPre")
+        return (
+          <pre
+            key={key}
+            className="block p-2 rounded bg-slate-800/80 text-amber-200 text-sm overflow-x-auto my-1"
+          >
+            {content}
+          </pre>
+        );
+      if (t === "MessageEntitySpoiler")
+        return (
+          <span
+            key={key}
+            className="bg-slate-600 rounded px-0.5 cursor-pointer hover:bg-slate-500 spoiler-reveal"
+          >
+            {content}
+          </span>
+        );
+      if (t === "MessageEntityHashtag") {
+        const tag = segText.startsWith("#") ? segText : `#${segText}`;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onFilterByHashtag?.(tag)}
+            className="text-sky-400 hover:underline hover:text-sky-300 font-medium"
+          >
+            {segText}
+          </button>
+        );
+      }
+      if (t === "MessageEntityUrl" || t === "MessageEntityTextUrl") {
+        const url = entity.url || segText;
+        const tme = findTmeMatch(segText, url, chats);
+        if (tme?.matchedChat) {
+          return (
+            <a
+              key={key}
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                onOpenChat?.({
+                  chat_id: tme.matchedChat.chat_id,
+                  title: tme.matchedChat.title,
+                  initialMessageId: tme.postId ?? undefined,
+                });
+              }}
+              className="text-emerald-400 hover:underline"
+            >
+              {content}
+            </a>
+          );
+        }
+        if (/\/c\/(\d+)/.test(url)) {
+          const idMatch = url.match(/\/c\/(\d+)/);
+          const cid = idMatch ? parseInt("-100" + idMatch[1], 10) : null;
+          if (cid) {
+            return (
+              <a
+                key={key}
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(ev) => {
+                  ev.preventDefault();
+                  fetch("/api/chats/add", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      chat_id: cid,
+                      title: segText,
+                    }),
+                  })
+                    .then((r) => r.json())
+                    .then((d) => {
+                      if (d.added !== undefined) {
+                        const msg = d.added
+                          ? "Чат добавлен в список загрузок. После загрузки ссылка будет работать."
+                          : "Чат уже в списке.";
+                        if (typeof window !== "undefined" && window.toast)
+                          window.toast(msg);
+                        else alert(msg);
+                      }
+                    })
+                    .catch(() => {});
+                  window.open(url, "_blank");
+                }}
+                className="text-sky-400 hover:underline"
+              >
+                {content}
+              </a>
+            );
+          }
+        }
+        return (
+          <a
+            key={key}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sky-400 hover:underline"
+          >
+            {content}
+          </a>
+        );
+      }
+      return content;
+    };
+
+    const key = `${start}-${end}`;
+    out.push(wrap(segText, key));
+  }
+  return out;
 }
 
 const ChatViewer = ({
@@ -156,6 +368,10 @@ const ChatViewer = ({
   const virtuosoRef = useRef(null);
   const scrolledToInitialRef = useRef(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [chatInfo, setChatInfo] = useState({
+    description: "",
+    profile_link: "",
+  });
 
   const fetchPage = useCallback(
     async (offset, limit = PAGE_SIZE) => {
@@ -220,6 +436,18 @@ const ChatViewer = ({
       .then((d) => setOpenFileManager(!!d.open_file_manager))
       .catch(() => setOpenFileManager(false));
   }, []);
+
+  useEffect(() => {
+    fetch(`/api/chat/${chatId}/info`)
+      .then((r) => r.json())
+      .then((d) =>
+        setChatInfo({
+          description: d.description || "",
+          profile_link: d.profile_link || "",
+        }),
+      )
+      .catch(() => setChatInfo({ description: "", profile_link: "" }));
+  }, [chatId]);
 
   const handleOpenFolder = useCallback(
     async (e, messageId) => {
@@ -349,7 +577,7 @@ const ChatViewer = ({
         onClick={handleBackdropClick}
       >
         <div
-          className="glass-card p-8 max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col"
+          className="glass-card p-8 max-w-4xl w-full mx-4 max-h-[95vh] flex flex-col"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center justify-between mb-4">
@@ -375,7 +603,7 @@ const ChatViewer = ({
       onClick={handleBackdropClick}
     >
       <div
-        className="glass-card flex flex-col max-w-2xl w-full max-h-[90vh]"
+        className="glass-card flex flex-col max-w-4xl w-full max-h-[95vh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between p-4 border-b border-slate-700/50 shrink-0">
@@ -398,7 +626,70 @@ const ChatViewer = ({
             placeholder="Поиск по сообщениям…"
             className="flex-1 bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
           />
+          <div className="flex gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() =>
+                virtuosoRef.current?.scrollToIndex({
+                  index: 0,
+                  behavior: "smooth",
+                })
+              }
+              className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 hover:bg-slate-600 text-xs"
+              title="В начало"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                virtuosoRef.current?.scrollToIndex({
+                  index: Math.max(0, filteredItems.length - 1),
+                  behavior: "smooth",
+                })
+              }
+              className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 hover:bg-slate-600 text-xs"
+              title="В конец"
+            >
+              ↓
+            </button>
+          </div>
         </div>
+        {(chatInfo.description || chatInfo.profile_link) && (
+          <div className="px-4 py-2 border-b border-slate-700/30 shrink-0 bg-slate-800/30 rounded-b-sm">
+            {chatInfo.description && (
+              <p className="text-sm text-slate-300 mb-1">
+                {chatInfo.description}
+              </p>
+            )}
+            {chatInfo.profile_link && (
+              <a
+                href={chatInfo.profile_link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sky-400 hover:underline text-sm"
+              >
+                {chatInfo.profile_link}
+              </a>
+            )}
+          </div>
+        )}
+        {searchQuery.trim() && (
+          <div className="px-4 py-1 shrink-0 flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-slate-400">
+              {searchQuery.startsWith("#")
+                ? `Показаны сообщения с тегом ${searchQuery}`
+                : `Поиск: ${searchQuery}`}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="text-xs text-emerald-400 hover:underline"
+            >
+              Сбросить
+            </button>
+          </div>
+        )}
         <p className="text-xs text-slate-500 px-4 py-1 shrink-0">
           {searchQuery.trim()
             ? `${filteredItems.length} из ${items.length}`
@@ -408,7 +699,7 @@ const ChatViewer = ({
         <div className="flex-1 min-h-0 relative">
           <Virtuoso
             ref={virtuosoRef}
-            style={{ height: "100%", minHeight: 360 }}
+            style={{ height: "100%", minHeight: 520 }}
             data={filteredItems}
             firstItemIndex={searchQuery.trim() ? 0 : firstItemIndex}
             startReached={loadMoreTop}
@@ -431,37 +722,10 @@ const ChatViewer = ({
                     </p>
                     {msg.text ? (
                       <p className="text-sm text-slate-200 break-words whitespace-pre-wrap">
-                        {parseTelegramLinks(msg.text, chats).map((seg, i) =>
-                          seg.type === "text" ? (
-                            <span key={i}>{seg.value}</span>
-                          ) : seg.matchedChat ? (
-                            <a
-                              key={i}
-                              href="#"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                onOpenChat?.({
-                                  chat_id: seg.matchedChat.chat_id,
-                                  title: seg.matchedChat.title,
-                                  initialMessageId: seg.postId ?? undefined,
-                                });
-                              }}
-                              className="text-emerald-400 hover:underline"
-                            >
-                              {seg.value}
-                            </a>
-                          ) : (
-                            <a
-                              key={i}
-                              href={seg.href}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-sky-400 hover:underline"
-                            >
-                              {seg.value}
-                            </a>
-                          ),
-                        )}
+                        {formatMessageText(msg.text, msg.entities, chats, {
+                          onOpenChat,
+                          onFilterByHashtag: (tag) => setSearchQuery(tag),
+                        })}
                       </p>
                     ) : null}
                     {msg.has_media && (

@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Веб-архив: форматирование текста и entities**
+  - Колонка `entities` (JSON) в таблице `messages` — сохранение bold, italic, code, pre, spoiler, hashtag, url, text_url.
+  - API возвращает `entities` в `get_messages_page` и `get_messages_for_chat`.
+  - В ChatViewer — `formatMessageText`: рендер entities, кликабельные ссылки (в т.ч. t.me), хэштеги для фильтрации.
+- **Локальные ссылки на чаты и добавление в загрузки**
+  - API `POST /api/chats/add` (chat_id, title) — добавление чата в список загрузок.
+  - При клике на t.me/c/ID: если чат в архиве — локальный переход; иначе — добавление через API, toast, внешняя ссылка.
+- **Фото и видео — просмотр inline**
+  - `Content-Disposition: inline` для image/* и video/* в `get_message_file`; MIME из ClickHouse или по расширению.
+- **Хэштеги: фильтрация по тегу**
+  - Кликабельные хэштеги в сообщениях; по клику — фильтр по тегу и подсказка «Сбросить».
+- **Описание и ссылка чата**
+  - Колонки `description`, `username` в таблице `chats`; сохранение при импорте через `get_entity`.
+  - API `GET /api/chat/{id}/info` — description, profile_link.
+  - В начале ChatViewer — блок с описанием и ссылкой на профиль (t.me/…).
+- **ChatViewer: размер окна и навигация**
+  - Увеличен размер: `max-h-[95vh]`, `max-w-4xl`, minHeight 520.
+  - Кнопки «В начало» / «В конец» для прокрутки Virtuoso.
 - **БД как верификатор скачанных файлов (ClickHouse)**
   - Колонка `file_hash` (MD5) в таблицах `messages` и `file_downloads` для проверки целостности.
   - Опция `download_settings.use_db_file_verification`: при `true` и включённом ClickHouse проверка «уже скачано» идёт по БД (O(1)) вместо поиска в JSONL.
