@@ -680,6 +680,34 @@ class ClickHouseMetadataDB:
 
     # --- Файлы загрузки (статус и пути) ---
 
+    def is_message_skipped_stale(self, chat_id: int, message_id: int) -> bool:
+        """
+        Проверить, помечено ли сообщение как зависшее/таймаут для пропуска.
+        Если в file_downloads есть status=failed и error_message содержит timeout/stale —
+        пропускать загрузку при следующей попытке.
+        """
+        if not self.enabled:
+            return False
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                "SELECT status, error_message FROM file_downloads "
+                "WHERE chat_id = %(chat_id)s AND message_id = %(message_id)s "
+                "ORDER BY created_at DESC LIMIT 1",
+                {"chat_id": chat_id, "message_id": message_id},
+            )
+            if not rows:
+                return False
+            status = (rows[0][0] or "").lower()
+            err = (rows[0][1] or "").lower() if len(rows[0]) > 1 else ""
+            if status != "failed":
+                return False
+            skip_markers = ("timeout", "stale", "завис", "нет данных")
+            return any(m in err for m in skip_markers)
+        except Exception as e:
+            logger.warning("Ошибка проверки is_message_skipped_stale: %s", e)
+            return False
+
     def save_file_download(
         self,
         chat_id: int,

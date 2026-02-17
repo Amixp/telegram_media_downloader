@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ChatViewer: размер окна и навигация**
   - Увеличен размер: `max-h-[95vh]`, `max-w-4xl`, minHeight 520.
   - Кнопки «В начало» / «В конец» для прокрутки Virtuoso.
+- **Чистка зависших загрузок и пропуск в будущем**
+  - `download_settings.stale_task_timeout` (сек, по умолчанию 120): при 0% дольше этого времени — удаление задачи из веб-списка active_downloads.
+  - При TimeoutError после 3 попыток — `add_to_retry=False`, запись в `file_downloads` с error "timeout".
+  - Метод `is_message_skipped_stale()` в ClickHouse: проверка file_downloads на status=failed и error (timeout/stale) — при наличии пропуск загрузки.
 - **БД как верификатор скачанных файлов (ClickHouse)**
   - Колонка `file_hash` (MD5) в таблицах `messages` и `file_downloads` для проверки целостности.
   - Опция `download_settings.use_db_file_verification`: при `true` и включённом ClickHouse проверка «уже скачано» идёт по БД (O(1)) вместо поиска в JSONL.

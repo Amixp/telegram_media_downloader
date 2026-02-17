@@ -29,6 +29,8 @@ class DownloadSettings(BaseModel):
     # Таймаут (сек) ожидания следующего чанка при загрузке. При превышении — TimeoutError и retry/пропуск.
     # Помогает при зависании сети и быстрее реагирует на Ctrl+C (задача просыпается).
     download_chunk_timeout: int = 300
+    # Сек до признания задачи «зависшей» в веб-списке (0% без данных). По истечении — удаление из active_downloads.
+    stale_task_timeout: int = 120
     archive_settings: ArchiveSettings = Field(default_factory=ArchiveSettings)
 
 class SenderFilter(BaseModel):

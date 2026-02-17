@@ -48,8 +48,8 @@ manager = ConnectionManager()
 # Глобальное состояние
 PROGRESS_STATE = {
     "overall": {"total": 0, "completed": 0, "status": "Idle", "speed": 0, "eta_seconds": None},
-    "chats": {}, # chat_id -> {title, total, completed, status}
-    "active_downloads": {} # task_id -> {description, total, completed}
+    "chats": {},  # chat_id -> {title, total, completed, status}
+    "active_downloads": {},  # task_id -> {description, total, completed, created_at}
 }
 
 # Чтобы "Active Threads" не разрастался бесконечно, удаляем завершённые задачи с небольшой задержкой
@@ -126,10 +126,24 @@ async def update_chat(chat_id: int, title: str = None, total: int = None, comple
     if status is not None: chat["status"] = status
     await manager.broadcast(json.dumps(PROGRESS_STATE))
 
+def _get_stale_task_timeout() -> float:
+    """Таймаут (сек) для признания задачи зависшей. Из config или 120 по умолчанию."""
+    try:
+        from utils.config import ConfigManager
+        cfg = ConfigManager().load()
+        val = (cfg.get("download_settings") or {}).get("stale_task_timeout", 120)
+        return float(val) if val is not None else 120.0
+    except Exception:
+        return 120.0
+
+
 async def update_download(task_id: Any, description: str = None, total: int = None, completed: int = None):
     tid = str(task_id)
     if tid not in PROGRESS_STATE["active_downloads"]:
-        PROGRESS_STATE["active_downloads"][tid] = {"description": "", "total": 0, "completed": 0}
+        PROGRESS_STATE["active_downloads"][tid] = {
+            "description": "", "total": 0, "completed": 0,
+            "created_at": time.monotonic(),
+        }
 
     dl = PROGRESS_STATE["active_downloads"][tid]
     if description is not None: dl["description"] = description
@@ -157,6 +171,40 @@ async def update_download(task_id: Any, description: str = None, total: int = No
     if dl_total > 0 and dl_completed >= dl_total and tid not in _CLEANUP_SCHEDULED:
         _CLEANUP_SCHEDULED.add(tid)
         asyncio.create_task(_cleanup_finished_download(tid))
+
+
+async def _cleanup_stale_tasks() -> None:
+    """Удалить зависшие задачи (completed=0 дольше stale_task_timeout сек)."""
+    timeout = _get_stale_task_timeout()
+    now = time.monotonic()
+    to_remove = []
+    for tid, dl in PROGRESS_STATE["active_downloads"].items():
+        if tid in _CLEANUP_SCHEDULED:
+            continue
+        created = dl.get("created_at", now)
+        cmp_val = int(dl.get("completed") or 0)
+        tot_val = int(dl.get("total") or 0)
+        if tot_val > 0 and cmp_val < tot_val and (now - created) >= timeout:
+            to_remove.append(tid)
+    for tid in to_remove:
+        PROGRESS_STATE["active_downloads"].pop(tid, None)
+    if to_remove:
+        await manager.broadcast(json.dumps(PROGRESS_STATE))
+
+
+@app.on_event("startup")
+async def _start_stale_cleanup_loop():
+    """Фоновая задача: периодическая чистка зависших загрузок."""
+    async def _loop():
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await _cleanup_stale_tasks()
+            except Exception as e:
+                logger.warning("Ошибка чистки зависших задач: %s", e)
+
+    asyncio.create_task(_loop())
+
 
 @app.get("/api/status")
 async def get_status():

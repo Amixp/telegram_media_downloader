@@ -704,6 +704,16 @@ class DownloadManager:
                         download_path = existing_file
                         skipped_as_existing = True
                         self.downloaded_files[(chat_id, message.id)] = download_path
+                    elif (
+                        self.clickhouse_db.enabled
+                        and self.clickhouse_db.is_message_skipped_stale(chat_id, message.id)
+                    ):
+                        # Ранее зависло/таймаут — пропускаем без попытки загрузки
+                        logger.info(
+                            "Сообщение %s ранее зависло/таймаут, пропуск (БД)",
+                            message.id,
+                        )
+                        return message.id
                     else:
                         # Файл отсутствует или невалиден - скачиваем
                         if self._is_exist(file_name):
@@ -997,7 +1007,7 @@ class DownloadManager:
                     chat_id = self.config.get("chat_id", 0)
                     if chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self._record_failed(chat_id, message, "timeout")
+                    self._record_failed(chat_id, message, "timeout", add_to_retry=False)
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
                     if self.web_app and web_task_id is not None and file_size:
