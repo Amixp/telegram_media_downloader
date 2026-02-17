@@ -380,6 +380,35 @@ class ClickHouseMetadataDB:
             logger.warning("Ошибка чтения chat_meta из ClickHouse: %s", e)
             return {"description": "", "username": "", "profile_link": ""}
 
+    def get_chat_id_by_username(self, username: str) -> Optional[int]:
+        """
+        Получить chat_id по username.
+
+        Parameters
+        ----------
+        username : str
+            Username чата (без @).
+
+        Returns
+        -------
+        Optional[int]
+            chat_id если найден, иначе None.
+        """
+        if not self.enabled:
+            return None
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                "SELECT chat_id FROM chats WHERE username = %(username)s LIMIT 1",
+                {"username": username},
+            )
+            if rows:
+                return int(rows[0][0])
+            return None
+        except Exception as e:
+            logger.warning("Ошибка поиска чата по username %s: %s", username, e)
+            return None
+
     def get_chats_manifest(
         self,
     ) -> List[Tuple[int, str, int, Optional[datetime]]]:

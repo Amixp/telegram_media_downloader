@@ -120,6 +120,10 @@ function findTmeMatch(raw, href, chats) {
       (c) => String(c.chat_id).replace(/^-100/, "") === idNorm,
     );
   }
+  // Поиск по username если не нашли по chat_id
+  if (!matchedChat && username && Array.isArray(chats)) {
+    matchedChat = chats.find((c) => c.username === username);
+  }
   return {
     href: href || (m[0].match(/^https?:/i) ? m[0] : `https://t.me/${m[2]}`),
     matchedChat,
@@ -184,6 +188,57 @@ function formatMessageText(
             });
           }}
           className="text-emerald-400 hover:underline"
+        >
+          {seg.value}
+        </a>
+      ) : seg.username ? (
+        <a
+          key={i}
+          href={seg.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={async (ev) => {
+            ev.preventDefault();
+            // Попробовать найти чат по username через API
+            try {
+              const res = await fetch(`/api/chats/by-username/${seg.username}`);
+              const data = await res.json();
+              if (data.chat_id) {
+                // Чат найден в БД, открыть локально
+                onOpenChat?.({
+                  chat_id: data.chat_id,
+                  title: seg.username,
+                  initialMessageId: seg.postId ?? undefined,
+                });
+              } else {
+                // Чат не найден, добавить в очередь
+                const addRes = await fetch("/api/chats/add", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    chat_id: null,
+                    title: seg.username,
+                    username: seg.username,
+                  }),
+                });
+                const addData = await addRes.json();
+                if (addData.added !== undefined) {
+                  const msg = addData.added
+                    ? `Чат @${seg.username} добавлен в очередь на скачивание. После загрузки ссылка будет работать.`
+                    : "Чат уже в очереди.";
+                  if (typeof window !== "undefined" && window.toast)
+                    window.toast(msg);
+                  else alert(msg);
+                }
+                // Открыть внешнюю ссылку
+                window.open(seg.href, "_blank");
+              }
+            } catch (err) {
+              console.error("Ошибка обработки username-ссылки:", err);
+              window.open(seg.href, "_blank");
+            }
+          }}
+          className="text-sky-400 hover:underline"
         >
           {seg.value}
         </a>
@@ -333,6 +388,66 @@ function formatMessageText(
               </a>
             );
           }
+        }
+        // Обработка username-ссылок вида https://t.me/username/post
+        const usernameMatch = url.match(/\/t\.me\/([a-zA-Z0-9_]+)(?:\/(\d+))?/);
+        if (usernameMatch) {
+          const username = usernameMatch[1];
+          const postId = usernameMatch[2]
+            ? parseInt(usernameMatch[2], 10)
+            : null;
+          return (
+            <a
+              key={key}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={async (ev) => {
+                ev.preventDefault();
+                // Попробовать найти чат по username через API
+                try {
+                  const res = await fetch(`/api/chats/by-username/${username}`);
+                  const data = await res.json();
+                  if (data.chat_id) {
+                    // Чат найден в БД, открыть локально
+                    onOpenChat?.({
+                      chat_id: data.chat_id,
+                      title: username,
+                      initialMessageId: postId ?? undefined,
+                    });
+                  } else {
+                    // Чат не найден, добавить в очередь
+                    const addRes = await fetch("/api/chats/add", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        chat_id: null,
+                        title: username,
+                        username: username,
+                      }),
+                    });
+                    const addData = await addRes.json();
+                    if (addData.added !== undefined) {
+                      const msg = addData.added
+                        ? `Чат @${username} добавлен в очередь на скачивание. После загрузки ссылка будет работать.`
+                        : "Чат уже в очереди.";
+                      if (typeof window !== "undefined" && window.toast)
+                        window.toast(msg);
+                      else alert(msg);
+                    }
+                    // Открыть внешнюю ссылку
+                    window.open(url, "_blank");
+                  }
+                } catch (err) {
+                  console.error("Ошибка обработки username-ссылки:", err);
+                  window.open(url, "_blank");
+                }
+              }}
+              className="text-sky-400 hover:underline"
+            >
+              {content}
+            </a>
+          );
         }
         return (
           <a

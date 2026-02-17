@@ -214,9 +214,11 @@ def _fetch_stats_sync(db) -> dict:
     """Синхронное получение статистики — выполняется в executor, чтобы не блокировать event loop."""
     client = db._get_client()
     chats_data = client.execute("""
-        SELECT chat_id, any(chat_title) AS title, count() AS message_count, sum(file_size) AS total_size
-        FROM messages
-        GROUP BY chat_id
+        SELECT m.chat_id, any(m.chat_title) AS title, count() AS message_count,
+               sum(m.file_size) AS total_size, any(c.username) AS username
+        FROM messages m
+        LEFT JOIN chats c ON m.chat_id = c.chat_id
+        GROUP BY m.chat_id
         ORDER BY message_count DESC
     """)
     history_data = client.execute("""
@@ -227,7 +229,8 @@ def _fetch_stats_sync(db) -> dict:
     """)
     return {
         "chats": [
-            {"chat_id": r[0], "title": (r[1] or "").strip() or f"Chat {r[0]}", "count": r[2], "size": r[3] or 0}
+            {"chat_id": r[0], "title": (r[1] or "").strip() or f"Chat {r[0]}",
+             "count": r[2], "size": r[3] or 0, "username": (r[4] or "").strip() if len(r) > 4 else ""}
             for r in chats_data
         ],
         "history": [{"date": str(r[0]), "count": r[1]} for r in history_data],
@@ -323,6 +326,25 @@ async def get_chat_info(chat_id: int):
     loop = asyncio.get_event_loop()
     meta = await loop.run_in_executor(None, lambda: db.get_chat_meta(chat_id))
     return {"description": meta.get("description", ""), "profile_link": meta.get("profile_link", "")}
+
+
+@app.get("/api/chats/by-username/{username}")
+async def get_chat_by_username(username: str):
+    """Найти chat_id по username."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        return {"chat_id": None}
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    loop = asyncio.get_event_loop()
+    chat_id = await loop.run_in_executor(
+        None,
+        lambda: db.get_chat_id_by_username(username)
+    )
+    return {"chat_id": chat_id}
 
 
 @app.get("/api/chat/{chat_id}/messages")
@@ -422,8 +444,15 @@ async def get_message_file(chat_id: int, message_id: int):
     media_type = _guess_media_type(file_path, ch_media_type)
     is_inline = media_type.startswith("image/") or media_type.startswith("video/")
     disposition = "inline" if is_inline else "attachment"
-    headers = {"Content-Disposition": f'{disposition}; filename="{filename}"'}
-    return FileResponse(file_path, filename=filename, media_type=media_type, headers=headers)
+
+    # FileResponse сам формирует Content-Disposition из filename,
+    # корректно кодируя не-ASCII символы через RFC 5987 (filename*=utf-8''...)
+    return FileResponse(
+        file_path,
+        filename=filename,
+        media_type=media_type,
+        content_disposition_type=disposition,
+    )
 
 
 @app.get("/api/chat/{chat_id}/message/{message_id}/path")
@@ -499,8 +528,9 @@ async def open_message_folder(chat_id: int, message_id: int, request: Request):
 
 class AddChatRequest(BaseModel):
     """Тело запроса POST /api/chats/add."""
-    chat_id: int
+    chat_id: Optional[int] = None
     title: Optional[str] = None
+    username: Optional[str] = None
 
 
 @app.post("/api/chats/add")
@@ -509,8 +539,27 @@ async def add_chat_to_downloads(body: AddChatRequest):
     from utils.config import ConfigManager
     cm = ConfigManager()
     config = cm.load()
+
+    # Если передан username, попробовать найти chat_id
+    chat_id = body.chat_id
+    if not chat_id and body.username:
+        from utils.clickhouse_db import ClickHouseMetadataDB
+        ch_config = config.get("clickhouse", {})
+        if ch_config.get("enabled"):
+            db = ClickHouseMetadataDB(ch_config)
+            loop = asyncio.get_event_loop()
+            found_id = await loop.run_in_executor(
+                None,
+                lambda: db.get_chat_id_by_username(body.username)
+            )
+            if found_id:
+                chat_id = found_id
+
+    if not chat_id:
+        return {"added": False, "message": "Не указан chat_id или username не найден"}
+
     try:
-        added = cm.add_chat_to_download_list(body.chat_id, body.title)
+        added = cm.add_chat_to_download_list(chat_id, body.title or body.username)
         cm.save()
         return {"added": added, "message": "Чат добавлен" if added else "Чат уже в списке"}
     except Exception as e:

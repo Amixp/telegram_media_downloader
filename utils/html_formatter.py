@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 class HtmlFormatter:
     """Класс для форматирования сообщений в HTML."""
 
-    def __init__(self, found_chat_ids: Optional[Set[int]] = None):
+    def __init__(self, found_chat_ids: Optional[Set[int]] = None, username_to_chat_id: Optional[Dict[str, int]] = None):
         """
         Инициализация HtmlFormatter.
 
@@ -16,8 +16,11 @@ class HtmlFormatter:
         ----------
         found_chat_ids: Optional[Set[int]]
             Множество для сбора ID чатов, найденных в ссылках.
+        username_to_chat_id: Optional[Dict[str, int]]
+            Маппинг username -> chat_id для локализации username-ссылок.
         """
         self.found_chat_ids = found_chat_ids if found_chat_ids is not None else set()
+        self.username_to_chat_id = username_to_chat_id if username_to_chat_id is not None else {}
 
     def format_message(self, msg: Dict[str, Any]) -> str:
         """
@@ -340,6 +343,13 @@ class HtmlFormatter:
                     return int(chat_id_str)
                 except (ValueError, TypeError):
                     pass
+            # Для ссылок вида https://t.me/username/post
+            pattern = r'https?://t\.me/([a-zA-Z0-9_]+)/(\d+)'
+            match = re.match(pattern, url)
+            if match:
+                username = match.group(1)
+                if self.username_to_chat_id and username in self.username_to_chat_id:
+                    return self.username_to_chat_id[username]
         return None
 
     def _convert_telegram_link(self, url: str, current_chat_id: Optional[int] = None) -> str:
@@ -381,9 +391,18 @@ class HtmlFormatter:
                 except (ValueError, TypeError):
                     pass
 
-            pattern = r'https?://t\.me/([^/]+)/(\d+)'
+            # Для ссылок вида https://t.me/username/post
+            pattern = r'https?://t\.me/([a-zA-Z0-9_]+)/(\d+)'
             match = re.match(pattern, url)
             if match:
+                username = match.group(1)
+                message_id = match.group(2)
+                if self.username_to_chat_id and username in self.username_to_chat_id:
+                    chat_id = self.username_to_chat_id[username]
+                    path_id = _archive_chat_id_for_path(chat_id)
+                    archive_file = f"chat_{path_id}.html"
+                    return f"{archive_file}#message-{message_id}"
+                # Если маппинга нет, вернуть исходную ссылку
                 return url
 
         return url
