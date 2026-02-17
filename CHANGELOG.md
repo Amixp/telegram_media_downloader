@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Ошибка FileNotFoundError при удалении дубликатов файлов**
+  - Добавлена проверка существования файла перед удалением в `manage_duplicate_file` для предотвращения ошибки, когда файл был удален другим процессом между проверкой и удалением.
 - **Веб-архив: ошибка кодирования при раздаче файлов с кириллическими именами**
   - Исправлена ошибка `UnicodeEncodeError: 'latin-1' codec can't encode characters` в `get_message_file` при раздаче файлов с не-ASCII символами в имени.
   - Убрана ручная установка заголовка `Content-Disposition` — теперь используется встроенная логика `FileResponse`, которая корректно кодирует имена файлов через RFC 5987 (`filename*=utf-8''...`).

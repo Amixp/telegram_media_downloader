@@ -121,7 +121,10 @@ def manage_duplicate_file(
             continue
         old_file_md5: str = _get_file_hash(old_file_path)
         if current_file_md5 == old_file_md5:
-            os.remove(file_path)
+            # Проверяем существование файла перед удалением
+            # (файл может быть удален другим процессом между проверкой и удалением)
+            if os.path.exists(file_path):
+                os.remove(file_path)
             return old_file_path
     return file_path
 
