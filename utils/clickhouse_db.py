@@ -873,6 +873,122 @@ class ClickHouseMetadataDB:
         except Exception as e:
             logger.warning("Ошибка удаления данных чата %s из ClickHouse: %s", chat_id, e)
 
+    def chat_exists(self, chat_id: int) -> bool:
+        """Проверить существование чата в таблице chats.
+        
+        Parameters
+        ----------
+        chat_id : int
+            ID чата
+            
+        Returns
+        -------
+        bool
+            True, если чат существует в БД
+        """
+        if not self.enabled:
+            return False
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                "SELECT 1 FROM chats WHERE chat_id = %(chat_id)s LIMIT 1",
+                {"chat_id": chat_id},
+            )
+            return len(rows) > 0
+        except Exception as e:
+            logger.warning("Ошибка проверки существования чата %s: %s", chat_id, e)
+            return False
+
+    def ensure_chat_in_db(self, chat_id: int, title: str = "") -> None:
+        """Добавить чат в таблицу chats, если его там нет.
+        
+        Parameters
+        ----------
+        chat_id : int
+            ID чата
+        title : str
+            Название чата (опционально)
+        """
+        if not self.enabled:
+            return
+        try:
+            client = self._get_client()
+            # INSERT для ReplacingMergeTree
+            client.execute(
+                """
+                INSERT INTO chats (chat_id, title, last_sync, message_count, total_size)
+                VALUES (%(chat_id)s, %(title)s, now(), 0, 0)
+                """,
+                {"chat_id": chat_id, "title": title or f"Chat {chat_id}"},
+            )
+            logger.info("Чат %s добавлен в БД", chat_id)
+        except Exception as e:
+            # ReplacingMergeTree может вызвать конфликт при параллельной вставке
+            logger.debug("Чат %s уже существует в БД или ошибка вставки: %s", chat_id, e)
+
+    def get_last_processed_message_id(self, chat_id: int) -> Optional[int]:
+        """Получить максимальный message_id для чата из БД.
+        
+        Parameters
+        ----------
+        chat_id : int
+            ID чата
+            
+        Returns
+        -------
+        Optional[int]
+            Максимальный message_id или None, если сообщений нет
+        """
+        if not self.enabled:
+            return None
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                "SELECT max(message_id) FROM messages WHERE chat_id = %(chat_id)s",
+                {"chat_id": chat_id},
+            )
+            if rows and rows[0][0] is not None:
+                return int(rows[0][0])
+            return None
+        except Exception as e:
+            logger.warning("Ошибка получения последнего message_id для чата %s: %s", chat_id, e)
+            return None
+
+    def get_retry_message_ids(self, chat_id: int, limit: int = 1000) -> List[int]:
+        """Получить список message_id для повторной загрузки из file_downloads.
+        
+        Parameters
+        ----------
+        chat_id : int
+            ID чата
+        limit : int
+            Максимальное количество записей (по умолчанию 1000)
+            
+        Returns
+        -------
+        List[int]
+            Список message_id со статусом failed или skipped
+        """
+        if not self.enabled:
+            return []
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                """
+                SELECT message_id 
+                FROM file_downloads 
+                WHERE chat_id = %(chat_id)s 
+                  AND status IN ('failed', 'skipped')
+                ORDER BY created_at DESC
+                LIMIT %(limit)s
+                """,
+                {"chat_id": chat_id, "limit": limit},
+            )
+            return [int(row[0]) for row in rows]
+        except Exception as e:
+            logger.warning("Ошибка получения списка retry для чата %s: %s", chat_id, e)
+            return []
+
     def close(self):
         """Закрыть соединение."""
         if self._client:

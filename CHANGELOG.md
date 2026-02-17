@@ -216,6 +216,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Автоматический retry с увеличенной задержкой для восстановления соединения
 
 ### Changed
+- **Переход на хранение состояния загрузки в ClickHouse вместо config.yaml**
+  - `last_read_message_id` теперь определяется как максимальный message_id из таблицы messages
+  - `ids_to_retry` теперь берется из таблицы file_downloads (статусы failed/skipped)
+  - Поля в config.yaml помечены устаревшими, но используются для миграции
+  - Исключены проверки старых сообщений при перезапуске приложения
+  - Автоматическая миграция чатов: добавление в БД из config.yaml и удаление из конфига после миграции
+  - При отключенном ClickHouse автоматический fallback на config.yaml
 - **Проверка архивов при `history_rebuild_if_missing`**
   - Вместо простой проверки `os.path.exists()` используется `validate_archive_file()`
   - Пустые или битые архивы теперь считаются невалидными и пересоздаются

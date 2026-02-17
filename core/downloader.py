@@ -1386,6 +1386,93 @@ class DownloadManager:
         self.config_manager.save()
         logger.info(self.i18n.t("updated_message_id"))
 
+    def _get_chat_state_from_config(self, chat_id: int) -> Tuple[int, List[int]]:
+        """Получить last_read_message_id и ids_to_retry из config.yaml.
+        
+        Parameters
+        ----------
+        chat_id : int
+            ID чата
+            
+        Returns
+        -------
+        Tuple[int, List[int]]
+            (last_read_message_id, ids_to_retry)
+        """
+        last_read_message_id = 0
+        ids_to_retry = []
+        
+        if "chats" in self.config and isinstance(self.config["chats"], list):
+            chat_config = next(
+                (c for c in self.config["chats"] if c.get("chat_id") == chat_id), None
+            )
+            if chat_config:
+                last_read_message_id = chat_config.get("last_read_message_id", 0)
+                ids_to_retry = chat_config.get("ids_to_retry", [])
+        else:
+            # Старая структура - использовать общий chat_id
+            if self.config.get("chat_id") == chat_id:
+                last_read_message_id = self.config.get("last_read_message_id", 0)
+                ids_to_retry = self.config.get("ids_to_retry", [])
+        
+        return last_read_message_id, ids_to_retry
+
+    def _migrate_chat_to_db(self, chat_id: int, chat_title: str = "") -> None:
+        """Мигрировать чат из config.yaml в ClickHouse.
+        
+        Parameters
+        ----------
+        chat_id : int
+            ID чата
+        chat_title : str
+            Название чата (опционально)
+        """
+        if not self.clickhouse_db or not self.clickhouse_db.enabled:
+            return
+        
+        # Проверить, есть ли чат в БД
+        if self.clickhouse_db.chat_exists(chat_id):
+            # Чат есть в БД - удалить из config.yaml
+            if "chats" in self.config and isinstance(self.config["chats"], list):
+                original_count = len(self.config["chats"])
+                self.config["chats"] = [
+                    c for c in self.config["chats"] 
+                    if c.get("chat_id") != chat_id
+                ]
+                if len(self.config["chats"]) < original_count:
+                    self.config_manager.save()
+                    logger.info(
+                        "Чат %s удален из config.yaml (уже есть в БД)",
+                        chat_id,
+                    )
+        else:
+            # Чата нет в БД - добавить
+            # Попытаться взять title из config.yaml
+            config_title = chat_title
+            if "chats" in self.config and isinstance(self.config["chats"], list):
+                chat_config = next(
+                    (c for c in self.config["chats"] if c.get("chat_id") == chat_id), 
+                    None
+                )
+                if chat_config and chat_config.get("title"):
+                    config_title = chat_config["title"]
+            
+            self.clickhouse_db.ensure_chat_in_db(chat_id, config_title)
+            
+            # После добавления в БД - удалить из config.yaml
+            if "chats" in self.config and isinstance(self.config["chats"], list):
+                original_count = len(self.config["chats"])
+                self.config["chats"] = [
+                    c for c in self.config["chats"] 
+                    if c.get("chat_id") != chat_id
+                ]
+                if len(self.config["chats"]) < original_count:
+                    self.config_manager.save()
+                    logger.info(
+                        "Чат %s мигрирован в БД и удален из config.yaml",
+                        chat_id,
+                    )
+
     async def begin_import_chat(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self,
         client: TelegramClient,
@@ -1479,25 +1566,51 @@ class DownloadManager:
         if "all" in media_types:
             media_types = ["audio", "document", "photo", "video", "voice", "video_note"]
 
-        # Получить last_read_message_id для этого чата
-        if "chats" in self.config and isinstance(self.config["chats"], list):
-            chat_config = next(
-                (c for c in self.config["chats"] if c.get("chat_id") == chat_id), None
-            )
-            if chat_config:
-                last_read_message_id = chat_config.get("last_read_message_id", 0)
-                ids_to_retry = chat_config.get("ids_to_retry", [])
+        # Получить last_read_message_id из ClickHouse (приоритет) или config.yaml (fallback/миграция)
+        last_read_message_id = 0
+        ids_to_retry = []
+
+        if self.clickhouse_db and self.clickhouse_db.enabled:
+            # МИГРАЦИЯ: добавить чат в БД, если его там нет, или удалить из config, если есть
+            self._migrate_chat_to_db(chat_id, chat_title or "")
+            
+            # Приоритет: запросить из БД
+            db_last_id = self.clickhouse_db.get_last_processed_message_id(chat_id)
+            if db_last_id is not None:
+                last_read_message_id = db_last_id
+                logger.info(
+                    "Продолжение загрузки чата %s с message_id=%s (из БД)",
+                    chat_id,
+                    last_read_message_id,
+                )
             else:
-                last_read_message_id = 0
-                ids_to_retry = []
+                # Нет данных в БД - попытка миграции из config.yaml
+                config_last_id, config_retry = self._get_chat_state_from_config(chat_id)
+                if config_last_id > 0:
+                    last_read_message_id = config_last_id
+                    logger.info(
+                        "Миграция: использование last_read_message_id=%s из config.yaml для чата %s",
+                        last_read_message_id,
+                        chat_id,
+                    )
+
+            # Получить ids_to_retry из file_downloads
+            max_retry = self.config.get("download_settings", {}).get("max_ids_to_retry", 500)
+            ids_to_retry = self.clickhouse_db.get_retry_message_ids(chat_id, limit=max_retry)
+            if ids_to_retry:
+                logger.info(
+                    "Запланировано %s сообщений для повторной загрузки (из БД)",
+                    len(ids_to_retry),
+                )
         else:
-            # Старая структура - использовать общий chat_id
-            if self.config.get("chat_id") == chat_id:
-                last_read_message_id = self.config.get("last_read_message_id", 0)
-                ids_to_retry = self.config.get("ids_to_retry", [])
-            else:
-                last_read_message_id = 0
-                ids_to_retry = []
+            # Fallback: использовать config.yaml
+            last_read_message_id, ids_to_retry = self._get_chat_state_from_config(chat_id)
+            if last_read_message_id > 0:
+                logger.info(
+                    "Продолжение загрузки чата %s с message_id=%s (из config.yaml, ClickHouse отключен)",
+                    chat_id,
+                    last_read_message_id,
+                )
 
         # Если история включена, но файл архива отсутствует или не проходит жёсткую проверку,
         # сбрасываем last_read_message_id и пересоздаём архив.
