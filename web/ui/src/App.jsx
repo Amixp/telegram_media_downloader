@@ -14,7 +14,14 @@ import {
   Search,
   Zap,
 } from "lucide-react";
-import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { Virtuoso } from "react-virtuoso";
 import {
@@ -589,7 +596,11 @@ const ChatViewer = ({
         {...(!embedded && { onClick: handleBackdropClick })}
       >
         <div
-          className={embedded ? "flex flex-col flex-1" : "glass-card p-8 max-w-4xl w-full mx-4 max-h-[95vh] flex flex-col"}
+          className={
+            embedded
+              ? "flex flex-col flex-1"
+              : "glass-card p-8 max-w-4xl w-full mx-4 max-h-[95vh] flex flex-col"
+          }
           {...(!embedded && { onClick: (e) => e.stopPropagation() })}
         >
           <div className="flex items-center justify-between mb-4">
