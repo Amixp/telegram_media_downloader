@@ -587,6 +587,10 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+    except asyncio.CancelledError:
+        # Нормальная ситуация при остановке сервера или закрытии соединения
+        manager.disconnect(websocket)
+        raise
 
 # Монтирование статических файлов (должно быть ПОСЛЕ всех остальных маршрутов)
 static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
