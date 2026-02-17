@@ -224,18 +224,20 @@ function formatMessageText(
                 const addData = await addRes.json();
                 if (addData.added !== undefined) {
                   const msg = addData.added
-                    ? `Чат @${seg.username} добавлен в очередь на скачивание. После загрузки ссылка будет работать.`
-                    : "Чат уже в очереди.";
+                    ? `Чат @${seg.username} добавлен в очередь на скачивание. Сообщение будет доступно после загрузки.`
+                    : "Чат уже в очереди на загрузку. Сообщение еще не скачано.";
                   if (typeof window !== "undefined" && window.toast)
                     window.toast(msg);
                   else alert(msg);
                 }
-                // Открыть внешнюю ссылку
-                window.open(seg.href, "_blank");
+                // НЕ открываем внешнюю ссылку автоматически
               }
             } catch (err) {
               console.error("Ошибка обработки username-ссылки:", err);
-              window.open(seg.href, "_blank");
+              const msg = "Ошибка при проверке чата. Попробуйте позже.";
+              if (typeof window !== "undefined" && window.toast)
+                window.toast(msg);
+              else alert(msg);
             }
           }}
           className="text-sky-400 hover:underline"
@@ -348,39 +350,57 @@ function formatMessageText(
             </a>
           );
         }
-        if (/\/c\/(\d+)/.test(url)) {
-          const idMatch = url.match(/\/c\/(\d+)/);
+        if (/\/c\/(\d+)\/(\d+)/.test(url)) {
+          const idMatch = url.match(/\/c\/(\d+)\/(\d+)/);
           const cid = idMatch ? parseInt("-100" + idMatch[1], 10) : null;
-          if (cid) {
+          const postId = idMatch ? parseInt(idMatch[2], 10) : null;
+          if (cid && postId) {
             return (
               <a
                 key={key}
                 href={url}
                 target="_blank"
                 rel="noopener noreferrer"
-                onClick={(ev) => {
+                onClick={async (ev) => {
                   ev.preventDefault();
-                  fetch("/api/chats/add", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
+                  // Проверить, есть ли чат в локальной базе
+                  const matchedLocalChat = Array.isArray(chats) 
+                    ? chats.find((c) => c.chat_id === cid) 
+                    : null;
+                  
+                  if (matchedLocalChat) {
+                    // Чат есть в базе - открыть локально
+                    onOpenChat?.({
                       chat_id: cid,
-                      title: segText,
-                    }),
-                  })
-                    .then((r) => r.json())
-                    .then((d) => {
-                      if (d.added !== undefined) {
-                        const msg = d.added
-                          ? "Чат добавлен в список загрузок. После загрузки ссылка будет работать."
-                          : "Чат уже в списке.";
-                        if (typeof window !== "undefined" && window.toast)
-                          window.toast(msg);
-                        else alert(msg);
-                      }
-                    })
-                    .catch(() => {});
-                  window.open(url, "_blank");
+                      title: matchedLocalChat.title,
+                      initialMessageId: postId,
+                    });
+                    return;
+                  }
+                  
+                  // Чата нет в локальной базе - добавить в загрузки
+                  try {
+                    const addRes = await fetch("/api/chats/add", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        chat_id: cid,
+                        title: segText,
+                      }),
+                    });
+                    const addData = await addRes.json();
+                    if (addData.added !== undefined) {
+                      const msg = addData.added
+                        ? "Чат добавлен в список загрузок. Сообщение будет доступно после скачивания."
+                        : "Чат уже в списке загрузок. Сообщение еще не скачано.";
+                      if (typeof window !== "undefined" && window.toast)
+                        window.toast(msg);
+                      else alert(msg);
+                    }
+                  } catch (err) {
+                    console.error("Ошибка добавления чата:", err);
+                  }
+                  // НЕ открываем внешнюю ссылку автоматически
                 }}
                 className="text-sky-400 hover:underline"
               >
@@ -429,18 +449,20 @@ function formatMessageText(
                     const addData = await addRes.json();
                     if (addData.added !== undefined) {
                       const msg = addData.added
-                        ? `Чат @${username} добавлен в очередь на скачивание. После загрузки ссылка будет работать.`
-                        : "Чат уже в очереди.";
+                        ? `Чат @${username} добавлен в очередь на скачивание. Сообщение будет доступно после загрузки.`
+                        : "Чат уже в очереди на загрузку. Сообщение еще не скачано.";
                       if (typeof window !== "undefined" && window.toast)
                         window.toast(msg);
                       else alert(msg);
                     }
-                    // Открыть внешнюю ссылку
-                    window.open(url, "_blank");
+                    // НЕ открываем внешнюю ссылку автоматически
                   }
                 } catch (err) {
                   console.error("Ошибка обработки username-ссылки:", err);
-                  window.open(url, "_blank");
+                  const msg = "Ошибка при проверке чата. Попробуйте позже.";
+                  if (typeof window !== "undefined" && window.toast)
+                    window.toast(msg);
+                  else alert(msg);
                 }
               }}
               className="text-sky-400 hover:underline"
