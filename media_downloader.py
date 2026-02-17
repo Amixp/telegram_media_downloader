@@ -77,7 +77,7 @@ async def main_async(args: argparse.Namespace):
         # Проверить, есть ли сохраненные чаты в конфиге или БД
         selected_chats = []
         config_has_chats = "chats" in config and isinstance(config["chats"], list) and len(config["chats"]) > 0
-        
+
         if config_has_chats:
             enabled_entries = [c for c in config["chats"] if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c]
             # Если есть order хотя бы у одного — сортируем очередь по нему, иначе сохраняем порядок из YAML
@@ -118,7 +118,7 @@ async def main_async(args: argparse.Namespace):
                 console.print(f"[cyan]Найдено {len(db_chats)} чатов в БД[/cyan]")
                 preselected_ids_db: Set[int] = {cid for cid, _ in db_chats}
                 preselected_order_db: List[int] = [cid for cid, _ in db_chats]
-                
+
                 edit = Confirm.ask("Редактировать список чатов из БД?", default=False)
                 if edit:
                     selected_chats = await chat_selector.select_chats(
@@ -152,7 +152,7 @@ async def main_async(args: argparse.Namespace):
         # Сохранить выбранные чаты в БД (если включена) и конфиг
         if clickhouse_db and clickhouse_db.enabled:
             clickhouse_db.save_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
-        
+
         config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
         config_manager.save()
 

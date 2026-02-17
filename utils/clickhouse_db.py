@@ -901,7 +901,7 @@ class ClickHouseMetadataDB:
 
     def ensure_chat_in_db(self, chat_id: int, title: str = "") -> None:
         """Добавить чат в таблицу chats, если его там нет.
-        
+
         Parameters
         ----------
         chat_id : int
@@ -928,7 +928,7 @@ class ClickHouseMetadataDB:
 
     def get_all_chats(self) -> List[Tuple[int, str]]:
         """Получить список всех чатов из таблицы chats.
-        
+
         Returns
         -------
         List[Tuple[int, str]]
@@ -953,7 +953,7 @@ class ClickHouseMetadataDB:
 
     def save_selected_chats(self, chats: List[Tuple[int, str]]) -> None:
         """Сохранить выбранные чаты в БД.
-        
+
         Parameters
         ----------
         chats : List[Tuple[int, str]]
