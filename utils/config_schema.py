@@ -31,6 +31,10 @@ class DownloadSettings(BaseModel):
     download_chunk_timeout: int = 300
     # Сек до признания задачи «зависшей» в веб-списке (0% без данных). По истечении — удаление из active_downloads.
     stale_task_timeout: int = 120
+    # Кол-во ретраев Telethon при FloodWait/ServerError. По умолчанию 5 — мало при GetFileRequest flood.
+    request_retries: Optional[int] = 15
+    # Задержка (сек) между чанками загрузки для снижения частоты GetFileRequest и flood wait.
+    inter_chunk_delay_sec: Optional[float] = 0.5
     archive_settings: ArchiveSettings = Field(default_factory=ArchiveSettings)
 
 class SenderFilter(BaseModel):

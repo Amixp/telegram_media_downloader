@@ -495,10 +495,11 @@ class DownloadManager:
         При отсутствии данных дольше download_chunk_timeout выбрасывает TimeoutError,
         что даёт возможность выйти из зависшей загрузки и быстрее реагировать на Ctrl+C.
         """
-        chunk_timeout = self.config.get("download_settings", {}).get(
-            "download_chunk_timeout", 300
-        )
+        ds = self.config.get("download_settings", {}) or {}
+        chunk_timeout = ds.get("download_chunk_timeout", 300)
+        inter_chunk_delay = ds.get("inter_chunk_delay_sec") or 0
         it = client.iter_download(media, offset=offset, request_size=request_size)
+        first_chunk = True
         while True:
             try:
                 chunk = await asyncio.wait_for(anext(it), timeout=chunk_timeout)
@@ -514,6 +515,9 @@ class DownloadManager:
                 raise TimeoutError(
                     f"Download stalled for message {message_id} (no data for {chunk_timeout}s)"
                 ) from None
+            if not first_chunk and inter_chunk_delay > 0:
+                await asyncio.sleep(inter_chunk_delay)
+            first_chunk = False
             yield chunk
 
     async def _get_media_meta(
@@ -1073,6 +1077,47 @@ class DownloadManager:
                             )
                 else:
                     # Другие OSError/ConnectionError - пробрасываем в общий Exception handler
+                    raise
+            except ValueError as e:
+                # Telethon: "Request was unsuccessful N time(s)" после исчерпания request_retries
+                # при FloodWait GetFileRequest — нужен длинный cooldown
+                err_msg = str(e)
+                if "Request was unsuccessful" in err_msg:
+                    logger.warning(
+                        "GetFileRequest flood: исчерпаны ретраи Telethon (антифрод), "
+                        "ожидание 60 сек перед повтором для сообщения[%s]...",
+                        message.id,
+                    )
+                    await asyncio.sleep(60)
+                    chat_id = self.config.get("chat_id", 0)
+                    if chat_id == 0:
+                        chat_id = message.chat.id if message.chat else 0
+                    if retry < 2:
+                        logger.warning(
+                            self.i18n.t("download_exception_refetch", id=message.id)
+                        )
+                        try:
+                            refetched = await client.get_messages(
+                                message.chat.id if message.chat else chat_id,
+                                ids=message.id,
+                            )
+                            if refetched is not None:
+                                message = refetched[0] if isinstance(refetched, list) else refetched
+                        except Exception:
+                            pass
+                        await asyncio.sleep(2)
+                    else:
+                        self._record_failed(chat_id, message, err_msg)
+                        if progress and own_task_id is not None:
+                            progress.update(own_task_id, visible=False)
+                        if self.web_app and web_task_id is not None and file_size:
+                            self._progress_callback(
+                                file_size, file_size,
+                                progress=progress, task_id=own_task_id,
+                                web_task_id=web_task_id, web_description=web_description,
+                            )
+                        break
+                else:
                     raise
             except Exception as e:
                 logger.error(

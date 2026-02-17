@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Удаление одного или всех чатов из архива для повторной загрузки.
   - Опции: `--chat-id ID`, `--all`, `--delete-media`, `--dry-run`, `--yes`.
   - Удаляет: сброс в config (last_read_message_id, ids_to_retry), JSONL, HTML, ClickHouse; опционально медиафайлы.
+- **Улучшение антифрод-системы при GetFileRequest flood**
+  - `download_settings.request_retries` (по умолчанию 15): кол-во ретраев Telethon при FloodWait; при 5 (дефолт Telethon) GetFileRequest быстро исчерпывает лимит.
+  - `download_settings.inter_chunk_delay_sec` (по умолчанию 0.5): пауза между чанками загрузки — снижает частоту запросов и flood wait.
+  - Обработка `ValueError("Request was unsuccessful N time(s)")`: при исчерпании ретраев Telethon — ожидание 60 сек, refetch и повтор попытки.
 - **Устойчивость к прерыванию (Ctrl+C) и целостность данных**
   - Graceful shutdown: в `finally` при любом выходе выполняются `download_manager.flush()`, `config_manager.save()`, `flush_logs()` — буфер ClickHouse и конфиг сохраняются при Ctrl+C.
   - Обработчик SIGINT/SIGTERM отменяет только дочерние задачи (загрузчик, веб-сервер); главная задача выполняет `finally` и завершается без `RuntimeError` и лишних traceback.

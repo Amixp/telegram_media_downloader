@@ -35,6 +35,8 @@ class SessionManager:
             Настроенный клиент Telethon.
         """
         proxy_config = get_proxy_config(self.config)
+        download_settings = self.config.get("download_settings") or {}
+        request_retries = download_settings.get("request_retries", 15)
 
         session_name = "media_downloader"
 
@@ -47,6 +49,7 @@ class SessionManager:
             system_version=SYSTEM_VERSION,
             app_version=APP_VERSION,
             lang_code=LANG_CODE,
+            request_retries=request_retries,
         )
 
         await self.client.start()

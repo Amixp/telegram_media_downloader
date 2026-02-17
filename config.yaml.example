@@ -48,6 +48,10 @@ download_settings:
   download_chunk_timeout: 300
   # Сек до признания задачи «зависшей» в веб-списке (0% без данных). По истечении — удаление из active_downloads.
   stale_task_timeout: 120
+  # Кол-во ретраев Telethon при FloodWait (по умолчанию 5). При GetFileRequest flood ставьте 15+.
+  request_retries: 15
+  # Задержка (сек) между чанками загрузки. Снижает частоту GetFileRequest и flood wait (0.5–1 сек).
+  inter_chunk_delay_sec: 0.5
   # Автоматическая распаковка архивов
   archive_settings:
     # Распаковывать архивы после загрузки
