@@ -213,12 +213,18 @@ async def get_status():
 def _fetch_stats_sync(db) -> dict:
     """Синхронное получение статистики — выполняется в executor, чтобы не блокировать event loop."""
     client = db._get_client()
+    # Дедупликация по (chat_id, message_id) для корректного подсчета сообщений
     chats_data = client.execute("""
-        SELECT m.chat_id, any(m.chat_title) AS title, count() AS message_count,
-               sum(m.file_size) AS total_size, any(c.username) AS username
-        FROM messages m
-        LEFT JOIN chats c ON m.chat_id = c.chat_id
-        GROUP BY m.chat_id
+        SELECT chat_id, any(chat_title) AS title, count() AS message_count,
+               sum(file_size) AS total_size, any(username) AS username
+        FROM (
+            SELECT m.chat_id, m.message_id, any(m.chat_title) AS chat_title,
+                   max(m.file_size) AS file_size, any(c.username) AS username
+            FROM messages m
+            LEFT JOIN chats c ON m.chat_id = c.chat_id
+            GROUP BY m.chat_id, m.message_id
+        )
+        GROUP BY chat_id
         ORDER BY message_count DESC
     """)
     history_data = client.execute("""
