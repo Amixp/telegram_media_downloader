@@ -1,17 +1,21 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
+  ArrowUpDown,
   ChevronLeft,
   ChevronRight,
   Database,
   Download,
   FileText,
+  Filter,
   FolderOpen,
   History,
   Image,
   MessageCircle,
   Music,
   Search,
+  Trash2,
+  X,
   Zap,
 } from "lucide-react";
 import {
@@ -492,6 +496,69 @@ function formatMessageText(
   return out;
 }
 
+const ChatProfileModal = ({
+  chatId,
+  title,
+  onClose,
+  description = "",
+  profile_link = "",
+  username = "",
+  messageCount,
+  totalSize,
+}) => {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto"
+      onClick={onClose}
+    >
+      <div
+        className="glass-card flex flex-col max-w-md w-full max-h-[85vh] my-auto overflow-hidden shrink-0"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-6 overflow-y-auto flex flex-col gap-4">
+          <h3 className="text-lg font-bold text-white truncate shrink-0">
+            {title}
+          </h3>
+          {username && (
+            <p className="text-sm text-slate-300 shrink-0">@{username}</p>
+          )}
+          {description && (
+            <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">
+              {description}
+            </p>
+          )}
+          {profile_link && (
+            <a
+              href={profile_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sky-400 hover:underline text-sm break-all shrink-0"
+            >
+              {profile_link}
+            </a>
+          )}
+          {(messageCount != null || totalSize != null) && (
+            <p className="text-xs text-slate-400 shrink-0">
+              {messageCount != null && `${messageCount} сообщ.`}
+              {messageCount != null && totalSize != null && " • "}
+              {totalSize != null &&
+                totalSize > 0 &&
+                `${(totalSize / (1024 * 1024 * 1024)).toFixed(2)} GB`}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded bg-slate-700 text-slate-200 hover:bg-slate-600 text-sm shrink-0 w-fit"
+          >
+            Закрыть
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ChatViewer = ({
   chatId,
   title,
@@ -499,7 +566,10 @@ const ChatViewer = ({
   initialMessageId,
   chats = [],
   onOpenChat,
+  onChatRemoved,
   embedded = false,
+  messageCount,
+  totalSize,
 }) => {
   const [items, setItems] = useState([]);
   const [startOffset, setStartOffset] = useState(0);
@@ -514,9 +584,12 @@ const ChatViewer = ({
   const virtuosoRef = useRef(null);
   const scrolledToInitialRef = useRef(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showInChatSearchPanel, setShowInChatSearchPanel] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const [chatInfo, setChatInfo] = useState({
     description: "",
     profile_link: "",
+    username: "",
   });
 
   const fetchPage = useCallback(
@@ -590,10 +663,68 @@ const ChatViewer = ({
         setChatInfo({
           description: d.description || "",
           profile_link: d.profile_link || "",
+          username: d.username || "",
         }),
       )
-      .catch(() => setChatInfo({ description: "", profile_link: "" }));
+      .catch(() =>
+        setChatInfo({ description: "", profile_link: "", username: "" }),
+      );
   }, [chatId]);
+
+  const handleClearMessages = useCallback(() => {
+    const confirmMsg =
+      `Очистить все сообщения чата "${title}"?\n\n` +
+      `Это действие:\n` +
+      `• Удалит все сообщения из базы данных ClickHouse\n` +
+      `• Не удалит медиафайлы и метаданные чата\n` +
+      `• Чат останется в архиве, но будет пустым\n\n` +
+      `Это действие нельзя отменить.`;
+    if (!confirm(confirmMsg)) return;
+    fetch(`/api/chat/${chatId}/clear`, { method: "POST" })
+      .then((res) => {
+        if (res.ok) {
+          loadInitial();
+          if (typeof window !== "undefined" && window.toast) {
+            window.toast(`Сообщения чата "${title}" очищены`);
+          }
+        } else {
+          res
+            .json()
+            .then((d) => alert(d.detail || "Ошибка"))
+            .catch(() => alert("Ошибка"));
+        }
+      })
+      .catch((err) => alert(err.message || "Ошибка"));
+  }, [chatId, title, loadInitial]);
+
+  const handleRemoveFromArchive = useCallback(() => {
+    const confirmMsg =
+      `Удалить чат "${title}" из архива?\n\n` +
+      `Это действие:\n` +
+      `• Удалит все данные из ClickHouse (сообщения, файлы, метаданные)\n` +
+      `• Удалит файлы JSONL и HTML из архива\n` +
+      `• Удалит чат из списка загрузки в config.yaml\n` +
+      `• Сбросит last_read_message_id и ids_to_retry\n` +
+      `• Медиафайлы НЕ будут удалены (останутся на диске)\n\n` +
+      `Это действие нельзя отменить.`;
+    if (!confirm(confirmMsg)) return;
+    fetch(`/api/chat/${chatId}/remove`, { method: "POST" })
+      .then((res) => {
+        if (res.ok) {
+          onChatRemoved?.();
+          onClose?.();
+          if (typeof window !== "undefined" && window.toast) {
+            window.toast(`Чат "${title}" удален из архива`);
+          }
+        } else {
+          res
+            .json()
+            .then((d) => alert(d.detail || "Ошибка"))
+            .catch(() => alert("Ошибка"));
+        }
+      })
+      .catch((err) => alert(err.message || "Ошибка"));
+  }, [chatId, title, onChatRemoved, onClose]);
 
   const handleOpenFolder = useCallback(
     async (e, messageId) => {
@@ -718,7 +849,7 @@ const ChatViewer = ({
 
   const containerClass = embedded
     ? "flex flex-col flex-1 min-h-0 rounded-lg border border-slate-700/50 overflow-hidden"
-    : "glass-card flex flex-col max-w-4xl w-full max-h-[95vh]";
+    : "glass-card flex flex-col max-w-4xl w-full max-h-[98vh]";
   const wrapperClass = embedded
     ? "flex flex-col flex-1 min-h-0"
     : "fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4";
@@ -736,7 +867,7 @@ const ChatViewer = ({
           className={
             embedded
               ? "flex flex-col flex-1"
-              : "glass-card p-8 max-w-4xl w-full mx-4 max-h-[95vh] flex flex-col"
+              : "glass-card p-8 max-w-4xl w-full mx-4 max-h-[98vh] flex flex-col"
           }
           {...(!embedded && { onClick: (e) => e.stopPropagation() })}
         >
@@ -768,57 +899,91 @@ const ChatViewer = ({
         className={containerClass}
         {...(!embedded && { onClick: (e) => e.stopPropagation() })}
       >
-        <div className="flex items-center justify-between p-4 border-b border-slate-700/50 shrink-0">
-          <h2 className="text-xl font-bold text-white truncate pr-4">
-            {title}
-          </h2>
-          {!embedded && onClose && (
+        <div className="flex items-center justify-between gap-2 p-4 border-b border-slate-700/50 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowProfileModal(true)}
+            className="text-left min-w-0 flex-1"
+          >
+            <h2 className="text-xl font-bold text-white truncate hover:text-sky-300 transition-colors">
+              {title}
+            </h2>
+          </button>
+          <div className="flex items-center gap-1 shrink-0">
             <button
-              onClick={onClose}
+              type="button"
+              onClick={() => setShowInChatSearchPanel((v) => !v)}
               className="p-2 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 transition-colors"
+              title="Поиск сообщений в чате"
             >
-              <ChevronLeft size={20} />
-            </button>
-          )}
-        </div>
-        <div className="px-4 py-2 border-b border-slate-700/30 shrink-0 flex items-center gap-2">
-          <Search size={14} className="text-slate-500 shrink-0" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Поиск по сообщениям…"
-            className="flex-1 bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
-          />
-          <div className="flex gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={() =>
-                virtuosoRef.current?.scrollToIndex({
-                  index: 0,
-                  behavior: "smooth",
-                })
-              }
-              className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 hover:bg-slate-600 text-xs"
-              title="В начало"
-            >
-              ↑
+              <Search size={18} />
             </button>
             <button
               type="button"
-              onClick={() =>
-                virtuosoRef.current?.scrollToIndex({
-                  index: Math.max(0, filteredItems.length - 1),
-                  behavior: "smooth",
-                })
-              }
-              className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 hover:bg-slate-600 text-xs"
-              title="В конец"
+              onClick={handleClearMessages}
+              className="p-2 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-700/50 transition-colors"
+              title="Очистить все сообщения чата"
             >
-              ↓
+              <Trash2 size={18} />
             </button>
+            <button
+              type="button"
+              onClick={handleRemoveFromArchive}
+              className="p-2 text-slate-400 hover:text-rose-300 rounded hover:bg-slate-700/50 transition-colors"
+              title="Удалить чат из архива"
+            >
+              <Trash2 size={18} className="text-rose-400/80" />
+            </button>
+            {!embedded && onClose && (
+              <button
+                onClick={onClose}
+                className="p-2 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 transition-colors"
+              >
+                <ChevronLeft size={20} />
+              </button>
+            )}
           </div>
         </div>
+        {showInChatSearchPanel && (
+          <div className="px-4 py-2 border-b border-slate-700/30 shrink-0 flex items-center gap-2">
+            <Search size={14} className="text-slate-500 shrink-0" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Поиск по сообщениям в этом чате…"
+              className="flex-1 bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
+            />
+            <div className="flex gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() =>
+                  virtuosoRef.current?.scrollToIndex({
+                    index: 0,
+                    behavior: "smooth",
+                  })
+                }
+                className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 hover:bg-slate-600 text-xs"
+                title="В начало"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  virtuosoRef.current?.scrollToIndex({
+                    index: Math.max(0, filteredItems.length - 1),
+                    behavior: "smooth",
+                  })
+                }
+                className="px-2 py-1 rounded bg-slate-700/50 text-slate-300 hover:bg-slate-600 text-xs"
+                title="В конец"
+              >
+                ↓
+              </button>
+            </div>
+          </div>
+        )}
         {(chatInfo.description || chatInfo.profile_link) && (
           <div className="px-4 py-2 border-b border-slate-700/30 shrink-0 bg-slate-800/30 rounded-b-sm">
             {chatInfo.description && (
@@ -863,7 +1028,7 @@ const ChatViewer = ({
         <div className="flex-1 min-h-0 relative">
           <Virtuoso
             ref={virtuosoRef}
-            style={{ height: "100%", minHeight: embedded ? 320 : 520 }}
+            style={{ height: "100%", minHeight: embedded ? 560 : 760 }}
             data={filteredItems}
             firstItemIndex={searchQuery.trim() ? 0 : firstItemIndex}
             startReached={loadMoreTop}
@@ -879,7 +1044,7 @@ const ChatViewer = ({
                 : "";
               const mt = (msg.media_type || "").toLowerCase();
               return (
-                <div className="px-4 py-2 border-b border-slate-700/30 hover:bg-slate-800/30">
+                <div className="px-4 py-2 border-b border-slate-700/30 bg-slate-800/40 hover:bg-slate-700/50">
                   <div className="flex flex-col gap-1">
                     <p className="text-[10px] text-slate-500 font-medium">
                       {formatDate(msg.date)}
@@ -1057,6 +1222,18 @@ const ChatViewer = ({
               </div>
             </div>
           </div>
+        )}
+        {showProfileModal && (
+          <ChatProfileModal
+            chatId={chatId}
+            title={title}
+            description={chatInfo.description}
+            profile_link={chatInfo.profile_link}
+            username={chatInfo.username}
+            messageCount={messageCount ?? total}
+            totalSize={totalSize}
+            onClose={() => setShowProfileModal(false)}
+          />
         )}
       </div>
     </div>
@@ -1534,32 +1711,109 @@ const FilesView = ({ enabled, chatList }) => {
 };
 
 const CHATS_DEBOUNCE_MS = 300;
+const MESSAGE_SEARCH_DEBOUNCE_MS = 400;
 
 const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
   const [selectedChat, setSelectedChat] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [globalMessageSearchQuery, setGlobalMessageSearchQuery] = useState("");
+  const [showAllChats, setShowAllChats] = useState(true);
+  const [sortBy, setSortBy] = useState("name"); // "name", "size", "count"
   const debouncedQuery = useDebounce(searchQuery, CHATS_DEBOUNCE_MS);
+  const debouncedMessageQuery = useDebounce(
+    globalMessageSearchQuery,
+    MESSAGE_SEARCH_DEBOUNCE_MS,
+  );
+
+  const [messageSearchResults, setMessageSearchResults] = useState([]);
+  const [messageSearchTotal, setMessageSearchTotal] = useState(0);
+  const [messageSearchLoading, setMessageSearchLoading] = useState(false);
+
+  useEffect(() => {
+    if (!enabled || !(debouncedMessageQuery || "").trim()) {
+      setMessageSearchResults([]);
+      setMessageSearchTotal(0);
+      return;
+    }
+    setMessageSearchLoading(true);
+    const q = debouncedMessageQuery.trim();
+    fetch(`/api/messages/search?q=${encodeURIComponent(q)}&limit=100&offset=0`)
+      .then((res) => res.json())
+      .then((data) => {
+        setMessageSearchResults(data.messages || []);
+        setMessageSearchTotal(data.total || 0);
+      })
+      .catch(() => {
+        setMessageSearchResults([]);
+        setMessageSearchTotal(0);
+      })
+      .finally(() => setMessageSearchLoading(false));
+  }, [enabled, debouncedMessageQuery]);
 
   const filteredChats = useMemo(() => {
     const q = (debouncedQuery || "").trim().toLowerCase();
-    if (!q) return chatList;
-    return chatList.filter(
-      (c) =>
-        (c.title || "").toLowerCase().includes(q) ||
-        String(c.chat_id || "").includes(q),
-    );
-  }, [chatList, debouncedQuery]);
+    const hasMessageSearch =
+      (debouncedMessageQuery || "").trim() && messageSearchResults.length > 0;
+    let result = [...chatList];
+
+    // Если есть поиск по сообщениям - сначала фильтруем по результатам поиска
+    if (hasMessageSearch) {
+      const chatIdsFromSearch = new Set(
+        messageSearchResults.map((msg) => msg.chat_id),
+      );
+      result = result.filter((c) => chatIdsFromSearch.has(c.chat_id));
+    }
+
+    // Фильтр: показывать все чаты или только с сообщениями (применяется всегда, кроме случая поиска по сообщениям)
+    if (!showAllChats) {
+      result = result.filter((c) => (c.count || 0) > 0);
+    }
+
+    // Если есть поиск по названию чата - фильтруем по нему
+    if (q) {
+      result = result.filter(
+        (c) =>
+          (c.title || "").toLowerCase().includes(q) ||
+          String(c.chat_id || "").includes(q),
+      );
+    }
+
+    // Сортировка
+    result.sort((a, b) => {
+      if (sortBy === "name") {
+        const aTitle = (a.title || `Chat ${a.chat_id}`).toLowerCase();
+        const bTitle = (b.title || `Chat ${b.chat_id}`).toLowerCase();
+        return aTitle.localeCompare(bTitle);
+      } else if (sortBy === "size") {
+        const aSize = a.size || 0;
+        const bSize = b.size || 0;
+        return bSize - aSize; // По убыванию
+      } else if (sortBy === "count") {
+        const aCount = a.count || 0;
+        const bCount = b.count || 0;
+        return bCount - aCount; // По убыванию
+      }
+      return 0;
+    });
+
+    return result;
+  }, [
+    chatList,
+    debouncedQuery,
+    debouncedMessageQuery,
+    messageSearchResults,
+    showAllChats,
+    sortBy,
+  ]);
 
   const handleOpenChat = useCallback(
     (payload) => {
       const found = chatList.find((c) => c.chat_id === payload.chat_id);
-      if (found) {
-        setSelectedChat({
-          chat_id: payload.chat_id,
-          title: payload.title ?? found.title ?? `Chat ${payload.chat_id}`,
-          initialMessageId: payload.initialMessageId,
-        });
-      }
+      setSelectedChat({
+        chat_id: payload.chat_id,
+        title: payload.title ?? found?.title ?? `Chat ${payload.chat_id}`,
+        initialMessageId: payload.initialMessageId,
+      });
     },
     [chatList],
   );
@@ -1578,32 +1832,119 @@ const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
   }
 
   return (
-    <section className="glass-card p-6 flex flex-col min-h-0 flex-1">
+    <section className="glass-card p-6 flex flex-col min-h-0 h-screen max-h-screen overflow-hidden">
       <h3 className="card-title text-white shrink-0">
         <MessageCircle size={18} className="text-sky-400" /> Чаты
       </h3>
       <div className="mt-4 flex flex-wrap gap-2 items-center shrink-0">
         <Search size={14} className="text-slate-500 shrink-0" />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Поиск по названию чата…"
-          className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500/50 w-48 md:w-64"
-        />
+        <div className="relative">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Поиск по названию чата…"
+            className="bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 pr-8 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500/50 w-48 md:w-64"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 transition-colors"
+              title="Очистить поиск"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        <Search size={14} className="text-slate-500 shrink-0 ml-2" />
+        <div className="relative flex-1 min-w-[180px]">
+          <input
+            type="text"
+            value={globalMessageSearchQuery}
+            onChange={(e) => setGlobalMessageSearchQuery(e.target.value)}
+            placeholder="Поиск по сообщениям во всех чатах…"
+            className="w-full bg-slate-800/50 border border-slate-600/50 rounded px-3 py-1.5 pr-8 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50"
+          />
+          {globalMessageSearchQuery && (
+            <button
+              type="button"
+              onClick={() => setGlobalMessageSearchQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 transition-colors"
+              title="Очистить поиск"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        {selectedChat && (
+          <button
+            type="button"
+            onClick={() => setSelectedChat(null)}
+            className="p-2 text-slate-400 hover:text-white rounded hover:bg-slate-700/50 transition-colors shrink-0"
+            title="Очистить выбор"
+          >
+            <X size={18} />
+          </button>
+        )}
         {typeof onRefresh === "function" && (
           <button
             type="button"
             onClick={onRefresh}
-            className="flex items-center gap-2 px-3 py-1.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-sm"
+            className="flex items-center gap-2 px-3 py-1.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-sm shrink-0"
           >
             Обновить
           </button>
         )}
       </div>
       <div className="mt-4 flex flex-1 min-h-0 gap-4 flex-col md:flex-row">
-        <div className="flex flex-col min-w-[200px] md:min-w-[280px] md:w-[280px] shrink-0">
-          <div className="flex-1 min-h-0 overflow-y-auto rounded-lg border border-slate-700/50 bg-slate-800/30">
+        <div className="flex flex-col min-w-[200px] md:min-w-[280px] md:w-[280px] shrink-0 min-h-0">
+          <div className="mb-2 flex items-center gap-2 shrink-0">
+            <Filter size={14} className="text-slate-500 shrink-0" />
+            <div className="flex items-center gap-1 flex-1">
+              <button
+                type="button"
+                onClick={() => setShowAllChats(true)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  showAllChats
+                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/30"
+                    : "bg-slate-700/50 text-slate-400 hover:bg-slate-700/70"
+                }`}
+                title="Показать все чаты"
+              >
+                Все
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAllChats(false)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  !showAllChats
+                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/30"
+                    : "bg-slate-700/50 text-slate-400 hover:bg-slate-700/70"
+                }`}
+                title="Только с сообщениями"
+              >
+                С сообщ.
+              </button>
+            </div>
+            <div className="relative">
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="bg-slate-800/50 border border-slate-600/50 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-sky-500/50 appearance-none pr-6"
+                title="Сортировка"
+              >
+                <option value="name">По названию</option>
+                <option value="size">По объему</option>
+                <option value="count">По кол-ву</option>
+              </select>
+              <ArrowUpDown
+                size={12}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+              />
+            </div>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto rounded-lg border border-slate-700/50 bg-slate-800/30 overscroll-contain">
             {filteredChats.length === 0 ? (
               <p className="p-4 text-slate-500 text-sm">
                 {chatList.length === 0
@@ -1641,28 +1982,87 @@ const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
           </div>
         </div>
         <div className="flex-1 min-h-0 flex flex-col">
-          {selectedChat ? (
+          {(debouncedMessageQuery || "").trim() ? (
             <>
-              <div className="flex items-center gap-2 shrink-0 mb-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedChat(null)}
-                  className="px-2 py-1 rounded bg-slate-700/50 text-slate-400 hover:text-white text-sm"
-                >
-                  Очистить выбор
-                </button>
-              </div>
-              <div className="flex-1 min-h-0">
-                <ChatViewer
-                  chatId={selectedChat.chat_id}
-                  title={selectedChat.title}
-                  initialMessageId={selectedChat.initialMessageId}
-                  chats={chatList}
-                  onOpenChat={handleOpenChat}
-                  embedded={true}
-                />
-              </div>
+              {messageSearchLoading ? (
+                <div className="flex-1 flex items-center justify-center rounded-lg border border-slate-700/50 bg-slate-800/20">
+                  <p className="text-slate-500">Поиск…</p>
+                </div>
+              ) : messageSearchResults.length === 0 ? (
+                <div className="flex-1 flex items-center justify-center rounded-lg border border-slate-700/50 bg-slate-800/20">
+                  <p className="text-slate-500">Нет совпадений</p>
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 flex flex-col rounded-lg border border-slate-700/50 bg-slate-800/20 overflow-hidden">
+                  <div className="px-4 py-2 border-b border-slate-700/30 shrink-0 bg-slate-800/30">
+                    <p className="text-xs text-slate-400">
+                      Найдено сообщений: {messageSearchTotal}
+                    </p>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto">
+                    {messageSearchResults.map((msg) => (
+                      <div
+                        key={`${msg.chat_id}-${msg.id}`}
+                        onClick={() =>
+                          handleOpenChat({
+                            chat_id: msg.chat_id,
+                            title: msg.chat_title || `Chat ${msg.chat_id}`,
+                            initialMessageId: msg.id,
+                          })
+                        }
+                        className="px-4 py-3 border-b border-slate-700/30 cursor-pointer hover:bg-slate-700/50 transition-colors bg-slate-800/40"
+                      >
+                        <div className="flex items-start gap-2 mb-1">
+                          <p className="text-[10px] text-slate-400 truncate flex-shrink-0">
+                            {msg.chat_title || msg.chat_id}
+                          </p>
+                          <p className="text-[10px] text-slate-500">
+                            {new Date(msg.date).toLocaleString()}
+                          </p>
+                        </div>
+                        <p className="text-sm text-slate-200 break-words whitespace-pre-wrap">
+                          {formatMessageText(
+                            msg.text || "",
+                            msg.entities || [],
+                            chatList,
+                            {
+                              onOpenChat: handleOpenChat,
+                            },
+                          )}
+                        </p>
+                        {msg.has_media && (
+                          <p className="text-xs text-slate-500 mt-1">
+                            Медиа: {msg.media_type || "файл"}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
+          ) : selectedChat ? (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <ChatViewer
+                chatId={selectedChat.chat_id}
+                title={selectedChat.title}
+                initialMessageId={selectedChat.initialMessageId}
+                chats={chatList}
+                onOpenChat={handleOpenChat}
+                onChatRemoved={() => {
+                  onRefresh?.();
+                  setSelectedChat(null);
+                }}
+                messageCount={
+                  chatList.find((c) => c.chat_id === selectedChat.chat_id)
+                    ?.count
+                }
+                totalSize={
+                  chatList.find((c) => c.chat_id === selectedChat.chat_id)?.size
+                }
+                embedded={true}
+              />
+            </div>
           ) : (
             <div className="flex-1 flex items-center justify-center rounded-lg border border-slate-700/50 bg-slate-800/20 min-h-[320px]">
               <p className="text-slate-500">Выберите чат</p>
@@ -1889,8 +2289,20 @@ const Dashboard = () => {
                 chatId={selectedChat.chat_id}
                 title={selectedChat.title}
                 onClose={() => setSelectedChat(null)}
+                onChatRemoved={() => {
+                  setSelectedChat(null);
+                  fetchStats();
+                }}
                 initialMessageId={selectedChat.initialMessageId}
                 chats={stats?.chats || []}
+                messageCount={
+                  stats?.chats?.find((c) => c.chat_id === selectedChat.chat_id)
+                    ?.count
+                }
+                totalSize={
+                  stats?.chats?.find((c) => c.chat_id === selectedChat.chat_id)
+                    ?.size
+                }
                 onOpenChat={(payload) =>
                   setSelectedChat({
                     chat_id: payload.chat_id,

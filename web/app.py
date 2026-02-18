@@ -213,19 +213,30 @@ async def get_status():
 def _fetch_stats_sync(db) -> dict:
     """Синхронное получение статистики — выполняется в executor, чтобы не блокировать event loop."""
     client = db._get_client()
-    # Дедупликация по (chat_id, message_id) для корректного подсчета сообщений
+    # Получаем все чаты из таблицы chats и статистику сообщений через LEFT JOIN
+    # Это позволяет включить чаты с 0 сообщений
     chats_data = client.execute("""
-        SELECT chat_id, any(chat_title) AS title, count() AS message_count,
-               sum(file_size) AS total_size, any(username) AS username
-        FROM (
-            SELECT m.chat_id, m.message_id, any(m.chat_title) AS chat_title,
-                   max(m.file_size) AS file_size, any(c.username) AS username
-            FROM messages m
-            LEFT JOIN chats c ON m.chat_id = c.chat_id
-            GROUP BY m.chat_id, m.message_id
-        )
-        GROUP BY chat_id
-        ORDER BY message_count DESC
+        SELECT
+            c.chat_id,
+            any(c.title) AS title,
+            coalesce(msg_stats.message_count, 0) AS message_count,
+            coalesce(msg_stats.total_size, 0) AS total_size,
+            any(coalesce(c.username, '')) AS username
+        FROM chats c
+        LEFT JOIN (
+            SELECT
+                chat_id,
+                count() AS message_count,
+                sum(file_size) AS total_size
+            FROM (
+                SELECT chat_id, message_id, max(file_size) AS file_size
+                FROM messages
+                GROUP BY chat_id, message_id
+            )
+            GROUP BY chat_id
+        ) msg_stats ON c.chat_id = msg_stats.chat_id
+        GROUP BY c.chat_id, msg_stats.message_count, msg_stats.total_size
+        ORDER BY message_count DESC, c.chat_id DESC
     """)
     history_data = client.execute("""
         SELECT toDate(date) as d, count() as c
@@ -325,7 +336,7 @@ async def get_chat_info(chat_id: int):
     config = ConfigManager().load()
     ch_config = config.get("clickhouse", {})
     if not ch_config.get("enabled"):
-        return {"description": "", "profile_link": ""}
+        return {"description": "", "profile_link": "", "username": ""}
 
     from utils.clickhouse_db import ClickHouseMetadataDB
     db = ClickHouseMetadataDB(ch_config)
@@ -333,7 +344,11 @@ async def get_chat_info(chat_id: int):
     meta = await loop.run_in_executor(None, lambda: db.get_chat_meta(chat_id))
     if meta is None:
         meta = {}
-    return {"description": meta.get("description", ""), "profile_link": meta.get("profile_link", "")}
+    return {
+        "description": meta.get("description", ""),
+        "profile_link": meta.get("profile_link", ""),
+        "username": meta.get("username", ""),
+    }
 
 
 @app.get("/api/chats/by-username/{username}")
@@ -376,6 +391,74 @@ async def get_chat_messages(
         lambda: db.get_messages_page(chat_id, offset=offset, limit=limit),
     )
     return {"messages": messages, "total": total}
+
+
+@app.get("/api/messages/search")
+async def search_messages_all_chats(
+    q: Optional[str] = Query(None),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Нечеткий поиск сообщений по тексту во всех чатах."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        return {"messages": [], "total": 0}
+    if not (q or "").strip():
+        return {"messages": [], "total": 0}
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    loop = asyncio.get_event_loop()
+    messages, total = await loop.run_in_executor(
+        None,
+        lambda: db.search_messages_all_chats(q.strip(), offset=offset, limit=limit),
+    )
+    return {"messages": messages, "total": total}
+
+
+@app.post("/api/chat/{chat_id}/clear")
+async def clear_chat_messages(chat_id: int):
+    """Очистить все сообщения чата в ClickHouse (метаданные чата не трогает)."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="ClickHouse disabled")
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: db.clear_chat_messages(chat_id))
+    return {"ok": True}
+
+
+@app.post("/api/chat/{chat_id}/remove")
+async def remove_chat_from_archive_api(chat_id: int):
+    """Удалить чат из архива (config, JSONL, HTML, ClickHouse; медиа по умолчанию не удалять)."""
+    from fastapi import HTTPException
+    try:
+        from remove_chat_from_archive import remove_chat_from_archive
+        from utils.config import ConfigManager
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    cm = ConfigManager()
+    try:
+        cm.load()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Config load: {e}") from e
+    config_path = getattr(cm, "config_path", None) or "config.yaml"
+    code = remove_chat_from_archive(
+        config_path=config_path,
+        chat_ids=[chat_id],
+        delete_media=False,
+        dry_run=False,
+        yes=True,
+    )
+    if code != 0:
+        raise HTTPException(status_code=500, detail="remove_chat_from_archive failed")
+    return {"ok": True}
 
 
 def _get_base_directory() -> str:
