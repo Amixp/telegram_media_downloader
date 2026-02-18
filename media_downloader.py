@@ -57,7 +57,15 @@ async def main_async(args: argparse.Namespace):
             clickhouse_db = ClickHouseMetadataDB(config["clickhouse"])
             if clickhouse_db.enabled:
                 try:
-                    clickhouse_db.check_connection()
+                    # Обернуть синхронный вызов БД в executor для прерываемости
+                    loop = asyncio.get_event_loop()
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, clickhouse_db.check_connection),
+                        timeout=10.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Таймаут подключения к ClickHouse. Операции с БД отключены.")
+                    clickhouse_db.enabled = False
                 except Exception as e:
                     logger.warning("Нет доступа к ClickHouse: %s. Операции с БД отключены.", e)
                     clickhouse_db.enabled = False
@@ -119,7 +127,12 @@ async def main_async(args: argparse.Namespace):
         elif clickhouse_db and clickhouse_db.enabled:
             # Нет чатов в конфиге - попробовать загрузить из БД
             logger.info("Нет чатов в config.yaml, загрузка из ClickHouse...")
-            db_chats = clickhouse_db.get_all_chats()
+            # Обернуть синхронный вызов БД в executor для прерываемости
+            loop = asyncio.get_event_loop()
+            db_chats = await asyncio.wait_for(
+                loop.run_in_executor(None, clickhouse_db.get_all_chats),
+                timeout=10.0
+            )
             if db_chats:
                 console.print(f"[cyan]Найдено {len(db_chats)} чатов в БД[/cyan]")
                 preselected_ids_db: Set[int] = {cid for cid, _ in db_chats}
@@ -173,8 +186,13 @@ async def main_async(args: argparse.Namespace):
 
         # Сохранить выбранные чаты: в БД (если включена) ИЛИ в config (fallback)
         if clickhouse_db and clickhouse_db.enabled:
-            # Сохранение только в БД
-            clickhouse_db.save_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
+            # Сохранение только в БД (обернуть в executor)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                clickhouse_db.save_selected_chats,
+                [(cid, title) for (cid, title, _) in selected_chats]
+            )
             logger.info("Чаты сохранены в ClickHouse")
 
             # Миграция: если есть чаты в config.yaml - переместить в БД и очистить config
@@ -184,9 +202,10 @@ async def main_async(args: argparse.Namespace):
                     if isinstance(chat_entry, dict) and "chat_id" in chat_entry:
                         cid = chat_entry["chat_id"]
                         title = chat_entry.get("title", "")
-                        # Добавить в БД, если его там нет
-                        if not clickhouse_db.chat_exists(cid):
-                            clickhouse_db.ensure_chat_in_db(cid, title)
+                        # Обернуть синхронные вызовы БД
+                        chat_exists = await loop.run_in_executor(None, clickhouse_db.chat_exists, cid)
+                        if not chat_exists:
+                            await loop.run_in_executor(None, clickhouse_db.ensure_chat_in_db, cid, title)
                             migrated_count += 1
                 # Очистить config после миграции
                 if migrated_count > 0:
@@ -291,24 +310,18 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Обработка сигналов: отменяем только дочерние задачи, главная — выполняет finally (flush/save).
-    # loop.stop() не вызываем, чтобы main_async успел выполнить finally.
+    # Обработка сигналов: отменяем ВСЕ задачи включая main_task
+    # finally блок в main_async все равно выполнится
     import signal
-    main_task_ref = []
-
+    
     def on_signal():
-        if main_task_ref:
-            main_task = main_task_ref[0]
-            for task in asyncio.all_tasks(loop):
-                if task is not main_task:
-                    task.cancel()
-        else:
-            for task in asyncio.all_tasks(loop):
-                task.cancel()
         try:
             logger.info("Получен сигнал прерывания, завершение работы...")
         except Exception:
             pass
+        # Отменить все задачи
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -317,11 +330,22 @@ def main():
             pass
 
     try:
-        main_task_ref.append(loop.create_task(main_async(args)))
-        loop.run_until_complete(main_task_ref[0])
+        loop.run_until_complete(main_async(args))
     except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
+        logger.debug("Прерывание обработано, выход из main")
+    except Exception as e:
+        logger.exception("Необработанная ошибка в main: %s", e)
     finally:
+        # Отменить оставшиеся задачи
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        # Дождаться отмены всех задач с таймаутом
+        if pending:
+            try:
+                loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
+            except Exception:
+                pass
         loop.close()
 
 
