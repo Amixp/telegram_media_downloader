@@ -7,7 +7,6 @@ from typing import List, Set
 
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.prompt import Confirm
 
 console = Console()
 
@@ -88,20 +87,20 @@ async def main_async(args: argparse.Namespace):
             preselected_ids: Set[int] = {c["chat_id"] for c in enabled_entries}
             preselected_order: List[int] = [c["chat_id"] for c in enabled_entries]
 
-            if enabled_chats and not config.get("interactive_chat_selection", True):
+            # Если указан --select-chats, всегда открыть интерфейс выбора
+            if args.select_chats:
+                selected_chats = await chat_selector.select_chats(
+                    allow_multiple=True,
+                    ui=chat_selection_ui,
+                    preselected_chat_ids=preselected_ids,
+                    preselected_chat_id_order=preselected_order,
+                )
+            elif enabled_chats:
+                # Использовать чаты из конфига без вопросов
                 selected_chats = enabled_chats
-            elif enabled_chats and config.get("interactive_chat_selection", True):
-                edit = Confirm.ask("Редактировать список чатов?", default=False)
-                if edit:
-                    selected_chats = await chat_selector.select_chats(
-                        allow_multiple=True,
-                        ui=chat_selection_ui,
-                        preselected_chat_ids=preselected_ids,
-                        preselected_chat_id_order=preselected_order,
-                    )
-                else:
-                    selected_chats = enabled_chats
+                logger.info("Использовано %s чатов из config.yaml", len(enabled_chats))
             else:
+                # Нет enabled чатов - открыть интерфейс выбора
                 selected_chats = await chat_selector.select_chats(
                     allow_multiple=True,
                     ui=chat_selection_ui,
@@ -119,35 +118,46 @@ async def main_async(args: argparse.Namespace):
                 preselected_ids_db: Set[int] = {cid for cid, _ in db_chats}
                 preselected_order_db: List[int] = [cid for cid, _ in db_chats]
 
-                # Если interactive_chat_selection=False, использовать чаты из БД без вопросов
-                if not config.get("interactive_chat_selection", True):
-                    selected_chats = [(cid, title, "db") for cid, title in db_chats]
-                    logger.info("Использовано %s чатов из БД (interactive_chat_selection=False)", len(db_chats))
+                # Если указан --select-chats, открыть интерфейс выбора
+                if args.select_chats:
+                    selected_chats = await chat_selector.select_chats(
+                        allow_multiple=True,
+                        ui=chat_selection_ui,
+                        preselected_chat_ids=preselected_ids_db,
+                        preselected_chat_id_order=preselected_order_db,
+                    )
                 else:
-                    edit = Confirm.ask("Редактировать список чатов из БД?", default=False)
-                    if edit:
-                        selected_chats = await chat_selector.select_chats(
-                            allow_multiple=True,
-                            ui=chat_selection_ui,
-                            preselected_chat_ids=preselected_ids_db,
-                            preselected_chat_id_order=preselected_order_db,
-                        )
-                    else:
-                        selected_chats = [(cid, title, "db") for cid, title in db_chats]
+                    # Использовать все чаты из БД без вопросов
+                    selected_chats = [(cid, title, "db") for cid, title in db_chats]
+                    logger.info("Использовано %s чатов из ClickHouse", len(db_chats))
             else:
-                # Нет чатов ни в конфиге, ни в БД - интерактивный выбор
+                # Нет чатов ни в конфиге, ни в БД
+                if args.select_chats:
+                    # Открыть интерфейс выбора
+                    selected_chats = await chat_selector.select_chats(
+                        allow_multiple=True,
+                        ui=chat_selection_ui,
+                        preselected_chat_ids=None,
+                    )
+                else:
+                    # Нет чатов и не указан --select-chats
+                    logger.warning("Нет чатов для загрузки. Используйте --select-chats для выбора чатов.")
+                    await session_manager.stop()
+                    return
+        else:
+            # ClickHouse отключен и нет чатов в конфиге
+            if args.select_chats:
+                # Открыть интерфейс выбора
                 selected_chats = await chat_selector.select_chats(
                     allow_multiple=True,
                     ui=chat_selection_ui,
                     preselected_chat_ids=None,
                 )
-        else:
-            # Интерактивный выбор (ClickHouse отключен)
-            selected_chats = await chat_selector.select_chats(
-                allow_multiple=True,
-                ui=chat_selection_ui,
-                preselected_chat_ids=None,
-            )
+            else:
+                # Нет чатов и не указан --select-chats
+                logger.warning("Нет чатов для загрузки. Используйте --select-chats для выбора чатов.")
+                await session_manager.stop()
+                return
 
         if not selected_chats:
             logger.warning("Не выбрано ни одного чата для загрузки")
@@ -254,6 +264,7 @@ def main():
     """Главная функция загрузчика."""
     parser = argparse.ArgumentParser(description="Telegram Media Downloader")
     parser.add_argument("--web", action="store_true", help="Запустить веб-интерфейс дашборда")
+    parser.add_argument("--select-chats", action="store_true", help="Открыть интерфейс выбора чатов")
     args = parser.parse_args()
 
     loop = asyncio.new_event_loop()
