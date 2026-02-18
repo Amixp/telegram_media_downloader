@@ -76,6 +76,11 @@ async def main_async(args: argparse.Namespace):
         # Проверить, есть ли сохраненные чаты в конфиге или БД
         selected_chats = []
         config_has_chats = "chats" in config and isinstance(config["chats"], list) and len(config["chats"]) > 0
+        
+        logger.debug("config_has_chats = %s", config_has_chats)
+        logger.debug("clickhouse_db = %s", clickhouse_db)
+        if clickhouse_db:
+            logger.debug("clickhouse_db.enabled = %s", clickhouse_db.enabled)
 
         if config_has_chats:
             enabled_entries = [c for c in config["chats"] if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c]
@@ -109,9 +114,11 @@ async def main_async(args: argparse.Namespace):
                 )
         elif config.get("chat_id"):
             # Старая структура - один чат
+            logger.info("Использован устаревший параметр chat_id: %s", config["chat_id"])
             selected_chats = [(config["chat_id"], "", "single")]
         elif clickhouse_db and clickhouse_db.enabled:
             # Нет чатов в конфиге - попробовать загрузить из БД
+            logger.info("Нет чатов в config.yaml, загрузка из ClickHouse...")
             db_chats = clickhouse_db.get_all_chats()
             if db_chats:
                 console.print(f"[cyan]Найдено {len(db_chats)} чатов в БД[/cyan]")
