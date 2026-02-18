@@ -119,16 +119,21 @@ async def main_async(args: argparse.Namespace):
                 preselected_ids_db: Set[int] = {cid for cid, _ in db_chats}
                 preselected_order_db: List[int] = [cid for cid, _ in db_chats]
 
-                edit = Confirm.ask("Редактировать список чатов из БД?", default=False)
-                if edit:
-                    selected_chats = await chat_selector.select_chats(
-                        allow_multiple=True,
-                        ui=chat_selection_ui,
-                        preselected_chat_ids=preselected_ids_db,
-                        preselected_chat_id_order=preselected_order_db,
-                    )
-                else:
+                # Если interactive_chat_selection=False, использовать чаты из БД без вопросов
+                if not config.get("interactive_chat_selection", True):
                     selected_chats = [(cid, title, "db") for cid, title in db_chats]
+                    logger.info("Использовано %s чатов из БД (interactive_chat_selection=False)", len(db_chats))
+                else:
+                    edit = Confirm.ask("Редактировать список чатов из БД?", default=False)
+                    if edit:
+                        selected_chats = await chat_selector.select_chats(
+                            allow_multiple=True,
+                            ui=chat_selection_ui,
+                            preselected_chat_ids=preselected_ids_db,
+                            preselected_chat_id_order=preselected_order_db,
+                        )
+                    else:
+                        selected_chats = [(cid, title, "db") for cid, title in db_chats]
             else:
                 # Нет чатов ни в конфиге, ни в БД - интерактивный выбор
                 selected_chats = await chat_selector.select_chats(
