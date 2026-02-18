@@ -84,3 +84,4 @@ clean_coverage.txt
 coverage*.txt
 downloads.log
 downloads.log.*
+backups/

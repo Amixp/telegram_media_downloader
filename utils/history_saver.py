@@ -242,17 +242,11 @@ class JsonHistorySaver(HistorySaver):
         archive_path = os.path.join(self.history_path, f"chat_{path_id}.jsonl")
         message_ids = [msg.id for msg in messages]
 
-        # Проверка дублей: при primary_source — по ClickHouse
-        if self.ch_primary_source and self.ch_db and self.ch_db.enabled:
-            existing = self.ch_db.get_existing_message_ids(chat_id, message_ids)
-            if message_ids and set(message_ids) <= existing:
-                logger.info(
-                    "Архив чата уже содержит все сообщения (ClickHouse): chat_id=%s, сообщений=%s (пропуск сохранения)",
-                    chat_id,
-                    len(messages),
-                )
-                return
-        elif self._check_archive_duplicates(archive_path, message_ids):
+        # Проверка дублей: только по JSONL файлу
+        # NOTE: при ch_primary_source сообщения уже сохранены в CH перед вызовом save_batch,
+        # поэтому проверка по CH всегда будет True для текущей партии - это баг!
+        # Используем только проверку дублей в самом JSONL архиве.
+        if self._check_archive_duplicates(archive_path, message_ids):
             logger.info(
                 "Архив чата уже содержит все сообщения: chat_id=%s, path=%s, сообщений=%s (пропуск сохранения)",
                 chat_id,
@@ -501,27 +495,14 @@ class HtmlHistorySaver(HistorySaver):
         archive_path = os.path.join(self.history_path, f"chat_{path_id}.jsonl")
         message_ids = [msg.id for msg in messages]
 
-        # Проверка дублей: при primary_source — по ClickHouse
-        if self.ch_primary_source and self.ch_db and self.ch_db.enabled:
-            existing = self.ch_db.get_existing_message_ids(chat_id, message_ids)
-            if message_ids and set(message_ids) <= existing:
-                logger.info(
-                    "Архив чата уже содержит все сообщения (ClickHouse): chat_id=%s, сообщений=%s (пропуск сохранения)",
-                    chat_id,
-                    len(messages),
-                )
-                self._generate_index_html(
-                    load_index_manifest_fn,
-                    save_index_manifest_fn,
-                    list_chat_ids_from_jsonl_fn,
-                    try_get_chat_meta_from_jsonl_fn,
-                )
-                return
-        elif self._check_archive_duplicates(archive_path, message_ids):
+        # Проверка дублей: только по JSONL файлу
+        # NOTE: при ch_primary_source сообщения уже сохранены в CH перед вызовом save_batch_with_html,
+        # поэтому проверка по CH всегда будет True для текущей партии - это баг!
+        # Используем только проверку дублей в самом JSONL архиве.
+        if self._check_archive_duplicates(archive_path, message_ids):
             logger.info(
-                "Архив чата уже содержит все сообщения: chat_id=%s, path=%s, сообщений=%s (пропуск сохранения)",
+                "Архив чата уже содержит все сообщения (JSONL): chat_id=%s, сообщений=%s (пропуск сохранения)",
                 chat_id,
-                archive_path,
                 len(messages),
             )
             # Всё равно обновить индекс HTML

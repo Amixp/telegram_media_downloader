@@ -135,6 +135,8 @@ class ChatConfig(BaseModel):
 
 class WebConfig(BaseModel):
     """Настройки веб-дашборда."""
+    # Включить веб-интерфейс при запуске
+    enabled: bool = False
     # Разрешить открытие папки в проводнике (только при локальном запросе, по умолчанию выключено)
     open_file_manager: bool = False
 

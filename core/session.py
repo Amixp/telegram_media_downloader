@@ -1,4 +1,5 @@
 """Модуль управления сессией Telegram."""
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -58,4 +59,10 @@ class SessionManager:
     async def stop(self) -> None:
         """Остановить клиент."""
         if self.client:
-            await self.client.disconnect()
+            try:
+                # Таймаут на disconnect для предотвращения зависания при прерывании
+                await asyncio.wait_for(self.client.disconnect(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Таймаут при отключении Telegram клиента, принудительное завершение")
+            except Exception as e:
+                logger.debug("Ошибка при отключении клиента: %s", e)

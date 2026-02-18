@@ -290,24 +290,53 @@ class DownloadManager:
                             pass
                     else:
                         # Нет хеша в БД — полная валидация
-                        if not validate_downloads or validate_downloaded_media(
+                        is_valid = validate_downloaded_media(
                             db_path,
                             media_type,
                             db_size or expected_size,
                             check_signature=True,
-                        ):
+                        )
+                        if not is_valid:
+                            # Удалить битый файл если 0 байт
+                            try:
+                                file_size_on_disk = os.path.getsize(db_path)
+                                if file_size_on_disk == 0:
+                                    logger.info(
+                                        "Удаление битого файла 0 байт из БД: %s (message_id=%s)",
+                                        db_path,
+                                        message_id
+                                    )
+                                    os.remove(db_path)
+                            except (OSError, IOError) as e:
+                                logger.debug("Не удалось удалить битый файл %s: %s", db_path, e)
+                            return None
+                        if not validate_downloads or is_valid:
                             return db_path
 
         # Проверить файл по ожидаемому пути
         if self._is_exist(file_path):
             if validate_downloads:
-                if not validate_downloaded_media(
+                is_valid = validate_downloaded_media(
                     file_path,
                     media_type,
                     expected_size,
                     check_signature=True,
-                ):
-                    pass
+                )
+                if not is_valid:
+                    # Файл существует, но не прошел валидацию (0 байт, битый, неполный)
+                    try:
+                        file_size_on_disk = os.path.getsize(file_path)
+                        if file_size_on_disk == 0:
+                            # Удалить битый файл 0 байт для перезагрузки
+                            logger.info(
+                                "Удаление битого файла 0 байт: %s (message_id=%s)",
+                                file_path,
+                                message_id
+                            )
+                            os.remove(file_path)
+                    except (OSError, IOError) as e:
+                        logger.debug("Не удалось удалить битый файл %s: %s", file_path, e)
+                    return None
                 else:
                     return file_path
             else:
@@ -320,12 +349,25 @@ class DownloadManager:
             )
             if archived_path and self._is_exist(archived_path):
                 if validate_downloads:
-                    if not validate_downloaded_media(
+                    is_valid = validate_downloaded_media(
                         archived_path,
                         media_type,
                         expected_size,
                         check_signature=True,
-                    ):
+                    )
+                    if not is_valid:
+                        # Удалить битый файл если 0 байт
+                        try:
+                            file_size_on_disk = os.path.getsize(archived_path)
+                            if file_size_on_disk == 0:
+                                logger.info(
+                                    "Удаление битого файла 0 байт из архива: %s (message_id=%s)",
+                                    archived_path,
+                                    message_id
+                                )
+                                os.remove(archived_path)
+                        except (OSError, IOError) as e:
+                            logger.debug("Не удалось удалить битый файл %s: %s", archived_path, e)
                         return None
                 return archived_path
 
@@ -441,7 +483,7 @@ class DownloadManager:
         return f"msg_{message.id}"
 
     def _record_failed(
-        self, chat_id: int, message: Message, error_message: str = "", add_to_retry: bool = True
+        self, chat_id: int, message: Message, error_message: str = "", add_to_retry: bool = True, chat_title: str = ""
     ) -> None:
         """
         Записать неудачную загрузку в ClickHouse.
@@ -452,13 +494,13 @@ class DownloadManager:
         if add_to_retry:
             self.failed_ids.append((chat_id, message.id))
         if self.clickhouse_db.enabled:
-            self.clickhouse_db.save_file_download(
-                chat_id,
-                message.id,
-                "failed",
-                chat_title=str(self.config.get("chat_title", "")),
-                file_name=self._get_file_display_name_from_message(message),
-                file_path="",
+                self.clickhouse_db.save_file_download(
+                    chat_id,
+                    message.id,
+                    "failed",
+                    chat_title=chat_title,
+                    file_name=self._get_file_display_name_from_message(message),
+                    file_path="",
                 file_size=0,
                 error_message=(error_message or "")[:2048],
             )
@@ -598,6 +640,8 @@ class DownloadManager:
         download_directory: Optional[str] = None,
         progress: Optional[Progress] = None,
         task_id: Optional[TaskID] = None,
+        chat_id: Optional[int] = None,
+        chat_title: Optional[str] = None,
     ) -> int:
         """
         Загрузить медиа в соответствии с типом медиа.
@@ -675,12 +719,11 @@ class DownloadManager:
                         "skip_duplicates", True
                     )
 
-                    # Использовать chat_id из конфига (установлен в begin_import_chat),
+                    # Использовать переданный chat_id (из параметра метода),
                     # а не из message.chat.id, т.к. message.chat.id может быть без префикса -100
-                    # для супергрупп/каналов, а в конфиге хранится правильный chat_id с префиксом
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
-                        # Fallback: если chat_id не установлен в конфиге, использовать из сообщения
+                    # для супергрупп/каналов, а в параметре передаётся правильный chat_id с префиксом
+                    if chat_id is None or chat_id == 0:
+                        # Fallback: если chat_id не передан, использовать из сообщения
                         chat_id = message.chat.id if message.chat else 0
 
                     # Для веб-дашборда: стабильный task_id и короткое описание (имя файла)
@@ -708,6 +751,26 @@ class DownloadManager:
                         download_path = existing_file
                         skipped_as_existing = True
                         self.downloaded_files[(chat_id, message.id)] = download_path
+                        self.downloaded_ids.append((chat_id, message.id))
+
+                        # Обновить статус в БД, чтобы не попадал в ids_to_retry
+                        if self.clickhouse_db.enabled:
+                            fhash = ""
+                            try:
+                                if download_path and os.path.isfile(download_path):
+                                    fhash = get_file_hash(download_path)
+                            except (OSError, IOError):
+                                pass
+                            self.clickhouse_db.save_file_download(
+                                chat_id,
+                                message.id,
+                                "existing",
+                                chat_title=str(chat_title or ""),
+                                file_name=display_name,
+                                file_path=download_path,
+                                file_size=file_size or 0,
+                                file_hash=fhash,
+                            )
                     elif (
                         self.clickhouse_db.enabled
                         and self.clickhouse_db.is_message_skipped_stale(chat_id, message.id)
@@ -934,7 +997,7 @@ class DownloadManager:
                                     await loop.run_in_executor(
                                         None, lambda p=download_path: os.remove(p)
                                     )
-                                self._record_failed(chat_id, message, "validation_failed")
+                                self._record_failed(chat_id, message, "validation_failed", chat_title=chat_title or "")
                                 break
 
                             # Распаковка если это архив (теперь async)
@@ -955,7 +1018,7 @@ class DownloadManager:
                                 chat_id,
                                 message.id,
                                 "downloaded",
-                                chat_title=str(self.config.get("chat_title", "")),
+                                chat_title=str(chat_title or ""),
                                 file_name=display_name,
                                 file_path=download_path,
                                 file_size=file_size or 0,
@@ -977,14 +1040,13 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_reference_expired_skip", id=message.id)
                     )
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
+                    if chat_id is None or chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
                     # Не добавлять в ids_to_retry: refetch 3 раза не помог — файл недоступен,
                     # повтор при следующем запуске не поможет (то же самое).
                     self.permanent_skip_ids.append((chat_id, message.id))
                     self._record_failed(
-                        chat_id, message, "file_reference_expired", add_to_retry=False
+                        chat_id, message, "file_reference_expired", add_to_retry=False, chat_title=chat_title or ""
                     )
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
@@ -1008,10 +1070,9 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("timeout_skip", id=message.id)
                     )
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
+                    if chat_id is None or chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self._record_failed(chat_id, message, "timeout", add_to_retry=False)
+                    self._record_failed(chat_id, message, "timeout", add_to_retry=False, chat_title=chat_title or "")
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
                     if self.web_app and web_task_id is not None and file_size:
@@ -1032,10 +1093,9 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_migrate_error_skip", id=message.id, dc=dc_num)
                     )
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
+                    if chat_id is None or chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self._record_failed(chat_id, message, f"file_migrate dc={dc_num}")
+                    self._record_failed(chat_id, message, f"file_migrate dc={dc_num}", chat_title=chat_title or "")
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
                     if self.web_app and web_task_id is not None and file_size:
@@ -1063,10 +1123,9 @@ class DownloadManager:
                         logger.error(
                             self.i18n.t("connection_error_skip", id=message.id, error=error_str)
                         )
-                        chat_id = self.config.get("chat_id", 0)
-                        if chat_id == 0:
+                        if chat_id is None or chat_id == 0:
                             chat_id = message.chat.id if message.chat else 0
-                        self._record_failed(chat_id, message, error_str)
+                        self._record_failed(chat_id, message, error_str, chat_title=chat_title or "")
                         if progress and own_task_id is not None:
                             progress.update(own_task_id, visible=False)
                         if self.web_app and web_task_id is not None and file_size:
@@ -1089,8 +1148,7 @@ class DownloadManager:
                         message.id,
                     )
                     await asyncio.sleep(60)
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
+                    if chat_id is None or chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
                     if retry < 2:
                         logger.warning(
@@ -1107,7 +1165,7 @@ class DownloadManager:
                             pass
                         await asyncio.sleep(2)
                     else:
-                        self._record_failed(chat_id, message, err_msg)
+                        self._record_failed(chat_id, message, err_msg, chat_title=chat_title or "")
                         if progress and own_task_id is not None:
                             progress.update(own_task_id, visible=False)
                         if self.web_app and web_task_id is not None and file_size:
@@ -1144,7 +1202,7 @@ class DownloadManager:
                         pass
                     await asyncio.sleep(2)
                 else:
-                    self._record_failed(chat_id, message, str(e))
+                    self._record_failed(chat_id, message, str(e), chat_title=chat_title or "")
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
                     if self.web_app and web_task_id is not None and file_size:
@@ -1166,6 +1224,8 @@ class DownloadManager:
         semaphore: Optional[asyncio.Semaphore] = None,
         progress: Optional[Progress] = None,
         task_id: Optional[TaskID] = None,
+        chat_id: Optional[int] = None,
+        chat_title: Optional[str] = None,
     ) -> int:
         """
         Загрузить медиа из Telegram.
@@ -1208,12 +1268,12 @@ class DownloadManager:
                 async with semaphore:
                     return await self.download_media(
                         client, message, media_types, file_formats, download_directory,
-                        progress=progress, task_id=task_id
+                        progress=progress, task_id=task_id, chat_id=chat_id, chat_title=chat_title
                     )
             else:
                 return await self.download_media(
                     client, message, media_types, file_formats, download_directory,
-                    progress=progress, task_id=task_id
+                    progress=progress, task_id=task_id, chat_id=chat_id, chat_title=chat_title
                 )
 
         message_ids = await asyncio.gather(
@@ -1222,12 +1282,12 @@ class DownloadManager:
         first_message = messages[0] if messages else None
         chat = getattr(first_message, "chat", None) if first_message else None
 
-        # Использовать chat_id из конфига (установлен в begin_import_chat),
+        # Использовать переданный chat_id (из параметра метода),
         # а не из message.chat.id, т.к. message.chat.id может быть без префикса -100
-        # для супергрупп/каналов, а в конфиге хранится правильный chat_id с префиксом
-        _chat_id = self.config.get("chat_id", 0)
-        if _chat_id == 0 and chat:
-            # Fallback: если chat_id не установлен в конфиге, использовать из сообщения
+        # для супергрупп/каналов, а в параметре передаётся правильный chat_id с префиксом
+        _chat_id = chat_id
+        if _chat_id is None or _chat_id == 0:
+            # Fallback: если chat_id не передан, использовать из сообщения
             _chat_id = chat.id if chat else 0
 
         logger.info(
@@ -1315,6 +1375,9 @@ class DownloadManager:
         """
         Обновить конфигурацию (last_read_message_id, ids_to_retry для чата).
 
+        Примечание: При включенном ClickHouse состояние хранится в БД,
+        запись в config.yaml не производится.
+
         Причины роста ids_to_retry (очередь повторов):
         - Нестабильное соединение: wrong session ID, обрывы, ConnectionError → сообщения
           попадают в failed_ids и в ids_to_retry.
@@ -1328,6 +1391,14 @@ class DownloadManager:
         chat_id: Optional[int]
             ID чата для обновления состояния. Если None, используется chat_id из конфига.
         """
+        # Если ClickHouse включен - состояние хранится в БД, не в config.yaml
+        if self.clickhouse_db and self.clickhouse_db.enabled:
+            logger.debug(
+                "Пропуск update_config для чата %s - состояние хранится в ClickHouse",
+                chat_id
+            )
+            return
+
         config = self.config.copy()
         if chat_id is None:
             chat_id = config.get("chat_id")
@@ -1379,12 +1450,71 @@ class DownloadManager:
                 len(ids_to_retry),
             )
 
-        # Обновить состояние чата
+        # Обновить состояние чата в config.yaml
         self.config_manager.update_chat_state(
             chat_id, config.get("last_read_message_id", 0), ids_to_retry
         )
         self.config_manager.save()
         logger.info(self.i18n.t("updated_message_id"))
+
+    def _get_chat_state_from_config(self, chat_id: int) -> Tuple[int, List[int]]:
+        """Получить last_read_message_id и ids_to_retry из config.yaml.
+
+        Parameters
+        ----------
+        chat_id : int
+            ID чата
+
+        Returns
+        -------
+        Tuple[int, List[int]]
+            (last_read_message_id, ids_to_retry)
+        """
+        last_read_message_id = 0
+        ids_to_retry = []
+
+        if "chats" in self.config and isinstance(self.config["chats"], list):
+            chat_config = next(
+                (c for c in self.config["chats"] if c.get("chat_id") == chat_id), None
+            )
+            if chat_config:
+                last_read_message_id = chat_config.get("last_read_message_id", 0)
+                ids_to_retry = chat_config.get("ids_to_retry", [])
+        else:
+            # Старая структура - использовать общий chat_id
+            if self.config.get("chat_id") == chat_id:
+                last_read_message_id = self.config.get("last_read_message_id", 0)
+                ids_to_retry = self.config.get("ids_to_retry", [])
+
+        return last_read_message_id, ids_to_retry
+
+    def _ensure_chat_in_db(self, chat_id: int, chat_title: str = "") -> None:
+        """Убедиться, что чат есть в ClickHouse БД.
+
+        Parameters
+        ----------
+        chat_id : int
+            ID чата
+        chat_title : str
+            Название чата (опционально)
+        """
+        if not self.clickhouse_db or not self.clickhouse_db.enabled:
+            return
+
+        # Добавить чат в БД, если его там нет
+        if not self.clickhouse_db.chat_exists(chat_id):
+            # Попытаться взять title из config.yaml (legacy)
+            config_title = chat_title
+            if "chats" in self.config and isinstance(self.config["chats"], list):
+                chat_config = next(
+                    (c for c in self.config["chats"] if c.get("chat_id") == chat_id),
+                    None
+                )
+                if chat_config and chat_config.get("title"):
+                    config_title = chat_config["title"]
+
+            self.clickhouse_db.ensure_chat_in_db(chat_id, config_title)
+            logger.debug("Чат %s добавлен в БД", chat_id)
 
     async def begin_import_chat(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self,
@@ -1479,25 +1609,51 @@ class DownloadManager:
         if "all" in media_types:
             media_types = ["audio", "document", "photo", "video", "voice", "video_note"]
 
-        # Получить last_read_message_id для этого чата
-        if "chats" in self.config and isinstance(self.config["chats"], list):
-            chat_config = next(
-                (c for c in self.config["chats"] if c.get("chat_id") == chat_id), None
-            )
-            if chat_config:
-                last_read_message_id = chat_config.get("last_read_message_id", 0)
-                ids_to_retry = chat_config.get("ids_to_retry", [])
+        # Получить last_read_message_id из ClickHouse (приоритет) или config.yaml (fallback/миграция)
+        last_read_message_id = 0
+        ids_to_retry = []
+
+        if self.clickhouse_db and self.clickhouse_db.enabled:
+            # Убедиться, что чат есть в БД
+            self._ensure_chat_in_db(chat_id, chat_title or "")
+
+            # Приоритет: запросить из БД
+            db_last_id = self.clickhouse_db.get_last_processed_message_id(chat_id)
+            if db_last_id is not None:
+                last_read_message_id = db_last_id
+                logger.info(
+                    "Продолжение загрузки чата %s с message_id=%s (из БД)",
+                    chat_id,
+                    last_read_message_id,
+                )
             else:
-                last_read_message_id = 0
-                ids_to_retry = []
+                # Нет данных в БД - попытка миграции из config.yaml
+                config_last_id, config_retry = self._get_chat_state_from_config(chat_id)
+                if config_last_id > 0:
+                    last_read_message_id = config_last_id
+                    logger.info(
+                        "Миграция: использование last_read_message_id=%s из config.yaml для чата %s",
+                        last_read_message_id,
+                        chat_id,
+                    )
+
+            # Получить ids_to_retry из file_downloads
+            max_retry = self.config.get("download_settings", {}).get("max_ids_to_retry", 500)
+            ids_to_retry = self.clickhouse_db.get_retry_message_ids(chat_id, limit=max_retry)
+            if ids_to_retry:
+                logger.info(
+                    "Запланировано %s сообщений для повторной загрузки (из БД)",
+                    len(ids_to_retry),
+                )
         else:
-            # Старая структура - использовать общий chat_id
-            if self.config.get("chat_id") == chat_id:
-                last_read_message_id = self.config.get("last_read_message_id", 0)
-                ids_to_retry = self.config.get("ids_to_retry", [])
-            else:
-                last_read_message_id = 0
-                ids_to_retry = []
+            # Fallback: использовать config.yaml
+            last_read_message_id, ids_to_retry = self._get_chat_state_from_config(chat_id)
+            if last_read_message_id > 0:
+                logger.info(
+                    "Продолжение загрузки чата %s с message_id=%s (из config.yaml, ClickHouse отключен)",
+                    chat_id,
+                    last_read_message_id,
+                )
 
         # Если история включена, но файл архива отсутствует или не проходит жёсткую проверку,
         # сбрасываем last_read_message_id и пересоздаём архив.
@@ -1624,8 +1780,19 @@ class DownloadManager:
                     ]
                     return
 
+        new_messages_found = False
         try:
             async for message in messages_iter:  # type: ignore
+                # Логировать о наличии новых сообщений только один раз
+                if not new_messages_found:
+                    logger.info(
+                        "Чат %s (%s): обнаружены новые сообщения после message_id=%s",
+                        chat_title or chat_id,
+                        chat_id,
+                        last_read_message_id
+                    )
+                    new_messages_found = True
+
                 if end_date and message.date > end_date:
                     continue
                 if start_date and message.date < start_date:
@@ -1643,6 +1810,8 @@ class DownloadManager:
                         semaphore,
                         progress=progress,
                         task_id=task_id,
+                        chat_id=chat_id,
+                        chat_title=chat_title,
                     )
                     # Web Update
                     if self.web_app:
@@ -1664,6 +1833,16 @@ class DownloadManager:
             logger.error(f"Ошибка при получении сообщений для чата {chat_id}: {e}")
             logger.error("Проверьте правильность chat_id в конфигурации")
             return
+
+        # Логировать если новых сообщений не было найдено
+        if not new_messages_found and not ids_to_retry:
+            logger.info(
+                "Чат %s (%s): нет новых сообщений после message_id=%s",
+                chat_title or chat_id,
+                chat_id,
+                last_read_message_id
+            )
+
         if messages_list:
             last_read_message_id = await self.process_messages(
                 client,
@@ -1674,6 +1853,8 @@ class DownloadManager:
                 semaphore,
                 progress=progress,
                 task_id=task_id,
+                chat_id=chat_id,
+                chat_title=chat_title,
             )
 
         self.config["last_read_message_id"] = last_read_message_id
@@ -1744,10 +1925,6 @@ class DownloadManager:
                     chat_title or chat_id,
                     chat_id,
                 )
-
-                # Временно установить chat_id и chat_title для этого чата (логи/БД)
-                self.config["chat_id"] = chat_id
-                self.config["chat_title"] = chat_title or ""
 
                 try:
                     if self.web_app:

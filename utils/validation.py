@@ -87,6 +87,7 @@ def validate_downloaded_media(
     except OSError:
         return False
     if size <= 0:
+        logger.warning("Файл %s имеет размер %s байт (битый/неполный), требуется перезагрузка", path, size)
         return False
     if expected_size is not None and expected_size > 0:
         # Допуск: не менее 95% от ожидаемого (обрезка при загрузке)

@@ -5,8 +5,10 @@ import argparse
 import sys
 from typing import List, Set
 
+from rich.console import Console
 from rich.logging import RichHandler
-from rich.prompt import Confirm
+
+console = Console()
 
 from core.downloader import DownloadManager
 from core.session import SessionManager
@@ -47,14 +49,48 @@ async def main_async(args: argparse.Namespace):
     client = await session_manager.create_client()
 
     try:
+        # Инициализация ClickHouse до выбора чатов (для загрузки чатов из БД)
+        clickhouse_db = None
+        if config.get("clickhouse", {}).get("enabled"):
+            from utils.clickhouse_db import ClickHouseMetadataDB
+            from utils.log import ClickHouseLogHandler
+            clickhouse_db = ClickHouseMetadataDB(config["clickhouse"])
+            if clickhouse_db.enabled:
+                try:
+                    # Обернуть синхронный вызов БД в executor для прерываемости
+                    loop = asyncio.get_event_loop()
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, clickhouse_db.check_connection),
+                        timeout=10.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Таймаут подключения к ClickHouse. Операции с БД отключены.")
+                    clickhouse_db.enabled = False
+                except Exception as e:
+                    logger.warning("Нет доступа к ClickHouse: %s. Операции с БД отключены.", e)
+                    clickhouse_db.enabled = False
+                    if getattr(clickhouse_db, "_client", None) is not None:
+                        try:
+                            clickhouse_db._client.disconnect()
+                        except Exception:
+                            pass
+                        clickhouse_db._client = None
+
         # Выбор чатов
         language = config.get("language", "ru")
         chat_selector = ChatSelector(client, language, tui_config=config.get("tui"))
         chat_selection_ui = config.get("chat_selection_ui", "classic")
 
-        # Проверить, есть ли сохраненные чаты в конфиге
+        # Проверить, есть ли сохраненные чаты в конфиге или БД
         selected_chats = []
-        if "chats" in config and isinstance(config["chats"], list):
+        config_has_chats = "chats" in config and isinstance(config["chats"], list) and len(config["chats"]) > 0
+
+        logger.debug("config_has_chats = %s", config_has_chats)
+        logger.debug("clickhouse_db = %s", clickhouse_db)
+        if clickhouse_db:
+            logger.debug("clickhouse_db.enabled = %s", clickhouse_db.enabled)
+
+        if config_has_chats:
             enabled_entries = [c for c in config["chats"] if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c]
             # Если есть order хотя бы у одного — сортируем очередь по нему, иначе сохраняем порядок из YAML
             if any("order" in c for c in enabled_entries):
@@ -64,20 +100,20 @@ async def main_async(args: argparse.Namespace):
             preselected_ids: Set[int] = {c["chat_id"] for c in enabled_entries}
             preselected_order: List[int] = [c["chat_id"] for c in enabled_entries]
 
-            if enabled_chats and not config.get("interactive_chat_selection", True):
+            # Если указан --select-chats, всегда открыть интерфейс выбора
+            if args.select_chats:
+                selected_chats = await chat_selector.select_chats(
+                    allow_multiple=True,
+                    ui=chat_selection_ui,
+                    preselected_chat_ids=preselected_ids,
+                    preselected_chat_id_order=preselected_order,
+                )
+            elif enabled_chats:
+                # Использовать чаты из конфига без вопросов
                 selected_chats = enabled_chats
-            elif enabled_chats and config.get("interactive_chat_selection", True):
-                edit = Confirm.ask("Редактировать список чатов?", default=False)
-                if edit:
-                    selected_chats = await chat_selector.select_chats(
-                        allow_multiple=True,
-                        ui=chat_selection_ui,
-                        preselected_chat_ids=preselected_ids,
-                        preselected_chat_id_order=preselected_order,
-                    )
-                else:
-                    selected_chats = enabled_chats
+                logger.info("Использовано %s чатов из config.yaml", len(enabled_chats))
             else:
+                # Нет enabled чатов - открыть интерфейс выбора
                 selected_chats = await chat_selector.select_chats(
                     allow_multiple=True,
                     ui=chat_selection_ui,
@@ -86,43 +122,108 @@ async def main_async(args: argparse.Namespace):
                 )
         elif config.get("chat_id"):
             # Старая структура - один чат
+            logger.info("Использован устаревший параметр chat_id: %s", config["chat_id"])
             selected_chats = [(config["chat_id"], "", "single")]
-        else:
-            # Интерактивный выбор
-            selected_chats = await chat_selector.select_chats(
-                allow_multiple=True,
-                ui=chat_selection_ui,
-                preselected_chat_ids=None,
+        elif clickhouse_db and clickhouse_db.enabled:
+            # Нет чатов в конфиге - попробовать загрузить из БД
+            logger.info("Нет чатов в config.yaml, загрузка из ClickHouse...")
+            # Обернуть синхронный вызов БД в executor для прерываемости
+            loop = asyncio.get_event_loop()
+            db_chats = await asyncio.wait_for(
+                loop.run_in_executor(None, clickhouse_db.get_all_chats),
+                timeout=10.0
             )
+            if db_chats:
+                console.print(f"[cyan]Найдено {len(db_chats)} чатов в БД[/cyan]")
+                preselected_ids_db: Set[int] = {cid for cid, _ in db_chats}
+                preselected_order_db: List[int] = [cid for cid, _ in db_chats]
+
+                # Если указан --select-chats, открыть интерфейс выбора
+                if args.select_chats:
+                    selected_chats = await chat_selector.select_chats(
+                        allow_multiple=True,
+                        ui=chat_selection_ui,
+                        preselected_chat_ids=preselected_ids_db,
+                        preselected_chat_id_order=preselected_order_db,
+                    )
+                else:
+                    # Использовать все чаты из БД без вопросов
+                    selected_chats = [(cid, title, "db") for cid, title in db_chats]
+                    logger.info("Использовано %s чатов из ClickHouse", len(db_chats))
+            else:
+                # Нет чатов ни в конфиге, ни в БД
+                if args.select_chats:
+                    # Открыть интерфейс выбора
+                    selected_chats = await chat_selector.select_chats(
+                        allow_multiple=True,
+                        ui=chat_selection_ui,
+                        preselected_chat_ids=None,
+                    )
+                else:
+                    # Нет чатов и не указан --select-chats
+                    logger.warning("Нет чатов для загрузки. Используйте --select-chats для выбора чатов.")
+                    await session_manager.stop()
+                    return
+        else:
+            # ClickHouse отключен и нет чатов в конфиге
+            if args.select_chats:
+                # Открыть интерфейс выбора
+                selected_chats = await chat_selector.select_chats(
+                    allow_multiple=True,
+                    ui=chat_selection_ui,
+                    preselected_chat_ids=None,
+                )
+            else:
+                # Нет чатов и не указан --select-chats
+                logger.warning("Нет чатов для загрузки. Используйте --select-chats для выбора чатов.")
+                await session_manager.stop()
+                return
 
         if not selected_chats:
             logger.warning("Не выбрано ни одного чата для загрузки")
             await session_manager.stop()
             return
 
-        # Сохранить выбранные чаты в конфиг
-        config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
-        config_manager.save()
+        # Сохранить выбранные чаты: в БД (если включена) ИЛИ в config (fallback)
+        if clickhouse_db and clickhouse_db.enabled:
+            # Сохранение только в БД (обернуть в executor)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                clickhouse_db.save_selected_chats,
+                [(cid, title) for (cid, title, _) in selected_chats]
+            )
+            logger.info("Чаты сохранены в ClickHouse")
 
-        # Один экземпляр ClickHouse для логов и загрузчика (логи пишем в БД)
-        clickhouse_db = None
-        if config.get("clickhouse", {}).get("enabled"):
-            from utils.clickhouse_db import ClickHouseMetadataDB
+            # Миграция: если есть чаты в config.yaml - переместить в БД и очистить config
+            if config_has_chats and "chats" in config and isinstance(config["chats"], list):
+                migrated_count = 0
+                for chat_entry in config["chats"]:
+                    if isinstance(chat_entry, dict) and "chat_id" in chat_entry:
+                        cid = chat_entry["chat_id"]
+                        title = chat_entry.get("title", "")
+                        # Обернуть синхронные вызовы БД
+                        chat_exists = await loop.run_in_executor(None, clickhouse_db.chat_exists, cid)
+                        if not chat_exists:
+                            await loop.run_in_executor(None, clickhouse_db.ensure_chat_in_db, cid, title)
+                            migrated_count += 1
+                # Очистить config после миграции
+                if migrated_count > 0:
+                    config["chats"] = []
+                    config_manager.save()
+                    logger.info("Мигрировано %s чатов из config.yaml в ClickHouse", migrated_count)
+        else:
+            # Fallback: сохранение только в config.yaml (ClickHouse отключен)
+            config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
+            config_manager.save()
+            logger.info("Чаты сохранены в config.yaml")
+
+        # Настройка логирования в ClickHouse (если включено)
+        if clickhouse_db and clickhouse_db.enabled:
             from utils.log import ClickHouseLogHandler
-            clickhouse_db = ClickHouseMetadataDB(config["clickhouse"])
-            if clickhouse_db.enabled:
-                if config.get("clickhouse", {}).get("primary_source"):
-                    try:
-                        clickhouse_db.check_connection()
-                    except Exception as e:
-                        logger.warning("Нет доступа к ClickHouse (primary_source=true): %s. Операции с БД отключены.", e)
-                        clickhouse_db.enabled = False
-                        if getattr(clickhouse_db, "_client", None) is not None:
-                            try:
-                                clickhouse_db._client.disconnect()
-                            except Exception:
-                                pass
-                            clickhouse_db._client = None
+            if config.get("clickhouse", {}).get("primary_source"):
+                # Дополнительная проверка для primary_source режима
+                pass
                 if clickhouse_db.enabled:
                     root_logger = logging.getLogger()
                     handler = ClickHouseLogHandler(clickhouse_db)
@@ -133,14 +234,14 @@ async def main_async(args: argparse.Namespace):
         download_manager = DownloadManager(config_manager, clickhouse_db=clickhouse_db)
         pagination_limit = config.get("download_settings", {}).get("pagination_limit", 100)
 
-        # Очередь загрузки: берём из конфига (с учётом order), чтобы порядок был стабильным и редактируемым
-        cfg_after = config_manager.config
+        # Очередь загрузки: преобразовать selected_chats в формат для begin_import_all_chats
+        # Формат: [{"chat_id": int, "title": str, "enabled": True, ...}, ...]
         queue_entries = [
-            c for c in cfg_after.get("chats", [])
-            if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c
+            {"chat_id": cid, "title": title, "enabled": True}
+            for cid, title, _ in selected_chats
         ]
-        if any("order" in c for c in queue_entries):
-            queue_entries.sort(key=lambda c: int(c.get("order", 10**9)) if str(c.get("order", "")).lstrip("-").isdigit() else 10**9)
+
+        logger.info("Подготовлена очередь загрузки: %s чатов", len(queue_entries))
 
         # Запустить загрузку всех чатов с общим прогрессом
         downloader_task = asyncio.create_task(
@@ -150,7 +251,8 @@ async def main_async(args: argparse.Namespace):
         )
 
         # Если включен веб-интерфейс, запустить сервер
-        if args.web:
+        web_enabled = args.web or config.get("web", {}).get("enabled", False)
+        if web_enabled:
             import uvicorn
             from web.app import app as web_app
 
@@ -172,46 +274,54 @@ async def main_async(args: argparse.Namespace):
         # Graceful shutdown: flush буферов и сохранение конфига при любом выходе (в т.ч. Ctrl+C)
         try:
             if "download_manager" in locals() and download_manager is not None:
-                await download_manager.flush()
+                try:
+                    await asyncio.wait_for(download_manager.flush(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Таймаут при flush download_manager")
             if "config_manager" in locals() and config_manager is not None:
                 config_manager.save()
         except Exception as e:
             if getattr(sys, "meta_path", None) is not None:
                 logger.warning("Ошибка при завершении (flush/save): %s", e)
         if "clickhouse_db" in locals() and clickhouse_db is not None and getattr(clickhouse_db, "enabled", False):
-            await clickhouse_db.flush_logs()
+            try:
+                await asyncio.wait_for(clickhouse_db.flush_logs(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Таймаут при flush_logs ClickHouse")
+            except Exception as e:
+                logger.debug("Ошибка при flush_logs ClickHouse: %s", e)
         if "download_manager" in locals() and download_manager is not None:
             download_manager.close()
-        await session_manager.stop()
+        try:
+            await asyncio.wait_for(session_manager.stop(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning("Таймаут при остановке session_manager")
+        except Exception as e:
+            logger.debug("Ошибка при остановке session_manager: %s", e)
 
 
 def main():
     """Главная функция загрузчика."""
     parser = argparse.ArgumentParser(description="Telegram Media Downloader")
     parser.add_argument("--web", action="store_true", help="Запустить веб-интерфейс дашборда")
+    parser.add_argument("--select-chats", action="store_true", help="Открыть интерфейс выбора чатов")
     args = parser.parse_args()
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Обработка сигналов: отменяем только дочерние задачи, главная — выполняет finally (flush/save).
-    # loop.stop() не вызываем, чтобы main_async успел выполнить finally.
+    # Обработка сигналов: отменяем ВСЕ задачи включая main_task
+    # finally блок в main_async все равно выполнится
     import signal
-    main_task_ref = []
 
     def on_signal():
-        if main_task_ref:
-            main_task = main_task_ref[0]
-            for task in asyncio.all_tasks(loop):
-                if task is not main_task:
-                    task.cancel()
-        else:
-            for task in asyncio.all_tasks(loop):
-                task.cancel()
         try:
             logger.info("Получен сигнал прерывания, завершение работы...")
         except Exception:
             pass
+        # Отменить все задачи
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -220,11 +330,22 @@ def main():
             pass
 
     try:
-        main_task_ref.append(loop.create_task(main_async(args)))
-        loop.run_until_complete(main_task_ref[0])
+        loop.run_until_complete(main_async(args))
     except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
+        logger.debug("Прерывание обработано, выход из main")
+    except Exception as e:
+        logger.exception("Необработанная ошибка в main: %s", e)
     finally:
+        # Отменить оставшиеся задачи
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        # Дождаться отмены всех задач с таймаутом
+        if pending:
+            try:
+                loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
+            except Exception:
+                pass
         loop.close()
 
 

@@ -213,6 +213,13 @@ tui:
     move_up: ["K"]
     move_down: ["J"]
 
+# Веб-интерфейс дашборда (опционально)
+web:
+  # Включить веб-интерфейс при запуске (альтернатива --web параметру)
+  enabled: false
+  # Разрешить открытие папки в проводнике через API (только при локальном запросе)
+  open_file_manager: false
+
 # Настройки ClickHouse (опционально)
 clickhouse:
   enabled: false
@@ -232,7 +239,12 @@ clickhouse:
 chats:
   - chat_id: 123456789
     title: "Название чата"
+    # УСТАРЕЛО: last_read_message_id теперь берется из ClickHouse (если включен).
+    # Используется только для миграции при первом запуске с ClickHouse.
+    # При включенном ClickHouse определяется как MAX(message_id) из таблицы messages.
     last_read_message_id: 0
+    # УСТАРЕЛО: ids_to_retry теперь берется из таблицы file_downloads (если ClickHouse включен).
+    # Хранится список message_id для повторной загрузки.
     ids_to_retry: []
     enabled: true
     order: 0  # порядок в очереди загрузки (0-based). Если не задано — используется порядок в YAML.
