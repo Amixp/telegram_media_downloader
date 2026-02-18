@@ -255,17 +255,30 @@ async def main_async(args: argparse.Namespace):
         # Graceful shutdown: flush буферов и сохранение конфига при любом выходе (в т.ч. Ctrl+C)
         try:
             if "download_manager" in locals() and download_manager is not None:
-                await download_manager.flush()
+                try:
+                    await asyncio.wait_for(download_manager.flush(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Таймаут при flush download_manager")
             if "config_manager" in locals() and config_manager is not None:
                 config_manager.save()
         except Exception as e:
             if getattr(sys, "meta_path", None) is not None:
                 logger.warning("Ошибка при завершении (flush/save): %s", e)
         if "clickhouse_db" in locals() and clickhouse_db is not None and getattr(clickhouse_db, "enabled", False):
-            await clickhouse_db.flush_logs()
+            try:
+                await asyncio.wait_for(clickhouse_db.flush_logs(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Таймаут при flush_logs ClickHouse")
+            except Exception as e:
+                logger.debug("Ошибка при flush_logs ClickHouse: %s", e)
         if "download_manager" in locals() and download_manager is not None:
             download_manager.close()
-        await session_manager.stop()
+        try:
+            await asyncio.wait_for(session_manager.stop(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning("Таймаут при остановке session_manager")
+        except Exception as e:
+            logger.debug("Ошибка при остановке session_manager: %s", e)
 
 
 def main():
