@@ -2,7 +2,10 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
+import uuid
+from queue import Empty, Queue
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +14,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 logger = logging.getLogger("web_dashboard")
+
+# --- Резолвер username → chat_id и chat_id → title (фоновый поток + применение на main) ---
+RESOLVE_JOBS: Dict[str, Dict[str, Any]] = {}
+_RESOLVE_JOBS_LOCK = threading.Lock()
+_RESOLVER_QUEUE: Queue = Queue()  # Элементы: ("username", job_id, username, title) или ("chat_id", job_id, chat_id)
+_PENDING_APPLY_QUEUE: Queue = Queue()  # Элементы: (job_id, chat_id, title, username) или (job_id, chat_id, title, None) для title-only
+_RESOLVER_THREAD: Optional[threading.Thread] = None
+_RESOLVER_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 app = FastAPI(title="Telegram Media Downloader Dashboard")
 
@@ -194,8 +205,10 @@ async def _cleanup_stale_tasks() -> None:
 
 @app.on_event("startup")
 async def _start_stale_cleanup_loop():
-    """Фоновая задача: периодическая чистка зависших загрузок."""
-    async def _loop():
+    """Фоновая задача: периодическая чистка зависших загрузок; запуск резолвера username."""
+    global _RESOLVER_THREAD
+
+    async def _cleanup_loop():
         while True:
             await asyncio.sleep(30)
             try:
@@ -203,7 +216,30 @@ async def _start_stale_cleanup_loop():
             except Exception as e:
                 logger.warning("Ошибка чистки зависших задач: %s", e)
 
-    asyncio.create_task(_loop())
+    def _get_pending():
+        return _PENDING_APPLY_QUEUE.get(timeout=1.0)
+
+    async def _apply_pending_loop():
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                item = await loop.run_in_executor(None, _get_pending)
+                job_id, chat_id, title, username = item
+                await loop.run_in_executor(
+                    None,
+                    lambda j=job_id, c=chat_id, t=title, u=username: _apply_resolved_chat(j, c, t, u),
+                )
+            except Empty:
+                continue
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Ошибка применения резолва: %s", e)
+
+    _RESOLVER_THREAD = threading.Thread(target=_resolve_username_worker, daemon=True)
+    _RESOLVER_THREAD.start()
+    asyncio.create_task(_cleanup_loop())
+    asyncio.create_task(_apply_pending_loop())
 
 
 @app.get("/api/status")
@@ -268,6 +304,34 @@ async def get_stats():
     loop = asyncio.get_event_loop()
     try:
         data = await loop.run_in_executor(None, _fetch_stats_sync, db)
+        # Запустить резолв title для чатов с дефолтным именем (в фоне, не блокируя ответ)
+        chats_to_resolve = []
+        # Проверить активные резолвы для chat_id, чтобы не дублировать
+        active_resolves = set()
+        with _RESOLVE_JOBS_LOCK:
+            for job_data in RESOLVE_JOBS.values():
+                if job_data.get("status") in ("pending", "processing") and "chat_id" in job_data:
+                    active_resolves.add(job_data["chat_id"])
+        for chat in data.get("chats", []):
+            chat_id = chat.get("chat_id")
+            title = chat.get("title", "")
+            # Если имя дефолтное (пустое или "Chat {chat_id}") и нет активного резолва — добавить в очередь
+            if chat_id and (
+                not title or title.strip() == "" or title.strip() == f"Chat {chat_id}"
+            ) and chat_id not in active_resolves:
+                chats_to_resolve.append(chat_id)
+        # Запускаем резолв для всех найденных чатов (в фоне)
+        for chat_id in chats_to_resolve[:10]:  # Ограничение: не более 10 за раз
+            job_id = str(uuid.uuid4())
+            with _RESOLVE_JOBS_LOCK:
+                RESOLVE_JOBS[job_id] = {
+                    "status": "pending",
+                    "chat_id": chat_id,
+                }
+            try:
+                _RESOLVER_QUEUE.put_nowait(("chat_id", job_id, chat_id))
+            except Exception:
+                pass  # Если очередь переполнена — пропускаем
         return {"enabled": True, "connected": True, **data}
     except Exception as e:
         msg = str(e)
@@ -636,11 +700,278 @@ async def open_message_folder(chat_id: int, message_id: int, request: Request):
     return {"ok": True}
 
 
+def _resolve_username_worker() -> None:
+    """Фоновый поток: резолв username → chat_id через Telethon."""
+    global _RESOLVER_LOOP
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _RESOLVER_LOOP = loop
+
+    try:
+        from utils.config import ConfigManager
+        from utils.proxy import get_proxy_config
+        from telethon import TelegramClient
+        from telethon.utils import get_peer_id
+        from utils.meta import APP_VERSION, DEVICE_MODEL, LANG_CODE, SYSTEM_VERSION
+    except ImportError as e:
+        logger.warning("Резолвер username недоступен (нет зависимостей): %s", e)
+        return
+
+    while True:
+        try:
+            item = _RESOLVER_QUEUE.get(timeout=2.0)
+            if item is None:
+                break
+            task_type = item[0]
+            if task_type == "username":
+                job_id, _, username, title_from_request = item
+                username = (username or "").strip().lstrip("@")
+                if not username:
+                    with _RESOLVE_JOBS_LOCK:
+                        RESOLVE_JOBS[job_id] = {
+                            "status": "error",
+                            "error": "Пустой username",
+                            "username": username,
+                            "title": title_from_request or "",
+                        }
+                    continue
+
+                client = None
+                try:
+                    cm = ConfigManager()
+                    config = cm.load()
+                    api_id = config.get("api_id")
+                    api_hash = config.get("api_hash")
+                    if not api_id or not api_hash:
+                        with _RESOLVE_JOBS_LOCK:
+                            RESOLVE_JOBS[job_id] = {
+                                "status": "error",
+                                "error": "В конфиге не заданы api_id/api_hash",
+                                "username": username,
+                                "title": title_from_request or "",
+                            }
+                        continue
+                    proxy_config = get_proxy_config(config)
+                    download_settings = config.get("download_settings") or {}
+                    request_retries = download_settings.get("request_retries", 15)
+                    session_name = "media_downloader_resolver"
+                    client = TelegramClient(
+                        session_name,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                        proxy=proxy_config,
+                        device_model=DEVICE_MODEL,
+                        system_version=SYSTEM_VERSION,
+                        app_version=APP_VERSION,
+                        lang_code=LANG_CODE,
+                        request_retries=request_retries,
+                    )
+
+                    async def _resolve_user():
+                        await client.start()
+                        entity = await client.get_entity(username)
+                        return entity
+
+                    entity = loop.run_until_complete(_resolve_user())
+                    chat_id = get_peer_id(entity)
+                    title = getattr(entity, "title", None) or getattr(entity, "first_name", None) or username
+                    title = (title or "").strip() or f"@{username}"
+                    with _RESOLVE_JOBS_LOCK:
+                        RESOLVE_JOBS[job_id] = {
+                            "status": "done",
+                            "chat_id": chat_id,
+                            "title": title,
+                            "username": username,
+                        }
+                    _PENDING_APPLY_QUEUE.put((job_id, chat_id, title, username))
+                except Exception as e:
+                    logger.exception("Резолв username %s: %s", username, e)
+                    with _RESOLVE_JOBS_LOCK:
+                        RESOLVE_JOBS[job_id] = {
+                            "status": "error",
+                            "error": str(e),
+                            "username": username,
+                            "title": title_from_request or "",
+                        }
+                finally:
+                    if client:
+                        try:
+
+                            async def _disconnect():
+                                await client.disconnect()
+
+                            loop.run_until_complete(_disconnect())
+                        except Exception:
+                            pass
+            elif task_type == "chat_id":
+                job_id, _, chat_id = item
+                client = None
+                try:
+                    cm = ConfigManager()
+                    config = cm.load()
+                    api_id = config.get("api_id")
+                    api_hash = config.get("api_hash")
+                    if not api_id or not api_hash:
+                        with _RESOLVE_JOBS_LOCK:
+                            RESOLVE_JOBS[job_id] = {
+                                "status": "error",
+                                "error": "В конфиге не заданы api_id/api_hash",
+                                "chat_id": chat_id,
+                            }
+                        continue
+                    proxy_config = get_proxy_config(config)
+                    download_settings = config.get("download_settings") or {}
+                    request_retries = download_settings.get("request_retries", 15)
+                    session_name = "media_downloader_resolver"
+                    client = TelegramClient(
+                        session_name,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                        proxy=proxy_config,
+                        device_model=DEVICE_MODEL,
+                        system_version=SYSTEM_VERSION,
+                        app_version=APP_VERSION,
+                        lang_code=LANG_CODE,
+                        request_retries=request_retries,
+                    )
+
+                    async def _resolve_chat():
+                        await client.start()
+                        entity = await client.get_entity(chat_id)
+                        return entity
+
+                    entity = loop.run_until_complete(_resolve_chat())
+                    title = getattr(entity, "title", None) or getattr(entity, "first_name", None) or f"Chat {chat_id}"
+                    title = (title or "").strip() or f"Chat {chat_id}"
+                    username = getattr(entity, "username", None) or ""
+                    username = (username or "").strip()
+                    with _RESOLVE_JOBS_LOCK:
+                        RESOLVE_JOBS[job_id] = {
+                            "status": "done",
+                            "chat_id": chat_id,
+                            "title": title,
+                            "username": username or None,
+                        }
+                    _PENDING_APPLY_QUEUE.put((job_id, chat_id, title, username or None))
+                except Exception as e:
+                    logger.exception("Резолв chat_id %s: %s", chat_id, e)
+                    with _RESOLVE_JOBS_LOCK:
+                        RESOLVE_JOBS[job_id] = {
+                            "status": "error",
+                            "error": str(e),
+                            "chat_id": chat_id,
+                        }
+                finally:
+                    if client:
+                        try:
+
+                            async def _disconnect():
+                                await client.disconnect()
+
+                            loop.run_until_complete(_disconnect())
+                        except Exception:
+                            pass
+        except Empty:
+            continue
+        except Exception as e:
+            logger.exception("Резолвер: %s", e)
+
+
+def _apply_resolved_chat(job_id: str, chat_id: int, title: str, username: Optional[str]) -> None:
+    """Добавить резолвленный чат в ClickHouse и/или config (вызывать из main thread).
+
+    Если username=None — только обновление title (чат уже есть в БД, сохраняем текущие message_count/total_size).
+    Если username задан — полное добавление чата.
+    """
+    try:
+        from utils.config import ConfigManager
+        cm = ConfigManager()
+        config = cm.load()
+        ch_config = config.get("clickhouse", {})
+        if ch_config.get("enabled"):
+            from utils.clickhouse_db import ClickHouseMetadataDB
+            db = ClickHouseMetadataDB(ch_config)
+            if username is None:
+                # Обновление только title — получить текущие message_count и total_size из БД
+                try:
+                    client = db._get_client()
+                    rows = client.execute(
+                        "SELECT message_count, total_size FROM chats WHERE chat_id = %(chat_id)s LIMIT 1",
+                        {"chat_id": chat_id},
+                    )
+                    if rows:
+                        msg_count = int(rows[0][0]) if rows[0][0] else 0
+                        total_sz = int(rows[0][1]) if len(rows[0]) > 1 and rows[0][1] else 0
+                    else:
+                        msg_count, total_sz = 0, 0
+                except Exception:
+                    msg_count, total_sz = 0, 0
+            else:
+                msg_count, total_sz = 0, 0
+            # Обновляем через INSERT в ReplacingMergeTree (сохраняем текущие счетчики при обновлении title)
+            db._insert_chat(chat_id, title, msg_count, total_sz, "", username or "")
+        # Если username задан — добавляем в config (новый чат)
+        if username:
+            try:
+                cm.add_chat_to_download_list(chat_id, title)
+                cm.save()
+            except Exception as e:
+                logger.warning("Не удалось добавить чат в config: %s", e)
+    except Exception as e:
+        logger.exception("apply_resolved_chat: %s", e)
+
+
 class AddChatRequest(BaseModel):
     """Тело запроса POST /api/chats/add."""
     chat_id: Optional[int] = None
     title: Optional[str] = None
     username: Optional[str] = None
+
+
+class ResolveRequest(BaseModel):
+    """Тело запроса POST /api/chats/resolve."""
+    username: Optional[str] = None
+    chat_id: Optional[int] = None
+    title: Optional[str] = None
+
+
+@app.post("/api/chats/resolve")
+async def resolve_username(body: ResolveRequest):
+    """Запустить фоновый резолв username → chat_id или chat_id → title. Возвращает job_id для опроса статуса."""
+    from fastapi import HTTPException
+    job_id = str(uuid.uuid4())
+    if body.username:
+        username = (body.username or "").strip().lstrip("@")
+        if not username:
+            raise HTTPException(status_code=400, detail="username обязателен")
+        with _RESOLVE_JOBS_LOCK:
+            RESOLVE_JOBS[job_id] = {
+                "status": "pending",
+                "username": username,
+                "title": body.title or f"@{username}",
+            }
+        _RESOLVER_QUEUE.put(("username", job_id, username, body.title or f"@{username}"))
+    elif body.chat_id:
+        with _RESOLVE_JOBS_LOCK:
+            RESOLVE_JOBS[job_id] = {
+                "status": "pending",
+                "chat_id": body.chat_id,
+            }
+        _RESOLVER_QUEUE.put(("chat_id", job_id, body.chat_id))
+    else:
+        raise HTTPException(status_code=400, detail="Укажите username или chat_id")
+    return {"job_id": job_id, "status": "pending"}
+
+
+@app.get("/api/chats/resolve/{job_id}")
+async def resolve_status(job_id: str):
+    """Статус задачи резолва: pending | done | error."""
+    with _RESOLVE_JOBS_LOCK:
+        job = RESOLVE_JOBS.get(job_id)
+    if not job:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @app.post("/api/chats/add")

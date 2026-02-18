@@ -8,11 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Веб-дашборд: резолв username → chat_id и chat_id → title**
+  - При клике по ссылке на чат по username без chat_id в архиве: запускается фоновый резолв через Telethon (отдельный поток, сессия `media_downloader`), открывается плейсхолдер «Ищем chat_id…», после завершения чат добавляется в ClickHouse и в список загрузок config, список чатов обновляется и выполняется переход на чат/сообщение.
+  - Автоматический резолв title для чатов с дефолтным именем (`Chat {chat_id}`): при запросе `/api/stats` для таких чатов запускается фоновый резолв `chat_id → title` через Telethon, после завершения имя обновляется в ClickHouse (сохраняются текущие message_count и total_size).
+  - API: `POST /api/chats/resolve` (тело: `username` или `chat_id`, опционально `title`) — возвращает `job_id`; `GET /api/chats/resolve/{job_id}` — статус `pending` | `done` | `error` и при `done` — `chat_id`, `title`, `username` (если был резолв по username).
+  - В списке чатов показывается pending-чат с пометкой «поиск…» до завершения резолва.
 - **Makefile: команды для сборки фронтенда**
   - Добавлена команда `make frontend-install` для установки зависимостей фронтенда
   - Добавлена команда `make build-frontend` для сборки фронтенда
 
 ### Fixed
+- **Резолвер: исправлена ошибка asyncio.Future и блокировка SQLite**
+  - Исправлена ошибка `TypeError: An asyncio.Future, a coroutine or an awaitable is required` при резолве chat_id → title: все вызовы Telethon (`client.start()`, `client.get_entity()`, `client.disconnect()`) обёрнуты в явные корутины для корректной работы в отдельном потоке
+  - Исправлена блокировка SQLite при параллельном использовании сессии: резолвер использует отдельную сессию `media_downloader_resolver` вместо `media_downloader`, что устраняет конфликт с основной сессией
+  - Добавлена проверка активных резолвов перед постановкой задач в очередь, чтобы избежать дублирования задач для одного chat_id
 - **Веб-дашборд: фильтр чатов по наличию сообщений не работал**
   - Исправлен API `/api/stats`: теперь возвращает все чаты из таблицы `chats`, включая чаты с 0 сообщений
   - Изменен SQL-запрос: используется LEFT JOIN между таблицами `chats` и агрегированной статистикой из `messages`
