@@ -331,6 +331,8 @@ async def get_chat_info(chat_id: int):
     db = ClickHouseMetadataDB(ch_config)
     loop = asyncio.get_event_loop()
     meta = await loop.run_in_executor(None, lambda: db.get_chat_meta(chat_id))
+    if meta is None:
+        meta = {}
     return {"description": meta.get("description", ""), "profile_link": meta.get("profile_link", "")}
 
 

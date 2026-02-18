@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Веб-API: ошибка AttributeError в /api/chat/{id}/info**
+  - Добавлена проверка на None при получении метаданных чата
+  - При отсутствии метаданных возвращается пустой словарь вместо ошибки
 - **Веб-архив: локализованные ссылки открывали внешние ссылки Telegram**
   - Исправлена обработка ссылок вида `t.me/c/ID/post` и `t.me/username/post`
   - Если чат есть в локальной базе - открывается локальное сообщение в архиве
