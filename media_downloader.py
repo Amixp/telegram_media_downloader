@@ -154,7 +154,7 @@ async def main_async(args: argparse.Namespace):
             # Сохранение только в БД
             clickhouse_db.save_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
             logger.info("Чаты сохранены в ClickHouse")
-            
+
             # Миграция: если есть чаты в config.yaml - переместить в БД и очистить config
             if config_has_chats and "chats" in config and isinstance(config["chats"], list):
                 migrated_count = 0

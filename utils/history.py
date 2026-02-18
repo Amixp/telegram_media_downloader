@@ -197,31 +197,56 @@ class MessageHistory:
             return
 
         added_count = 0
-        for found_chat_id in self._found_chat_ids:
-            try:
-                was_added = self.config_manager.add_chat_to_download_list(found_chat_id)
-                if was_added:
-                    added_count += 1
-                    logger.info(
-                        "Добавлен чат из ссылки в список загрузок: chat_id=%s",
+        
+        # Если ClickHouse включен - добавлять в БД, иначе в config
+        if self.clickhouse_db and self.clickhouse_db.enabled:
+            for found_chat_id in self._found_chat_ids:
+                try:
+                    if not self.clickhouse_db.chat_exists(found_chat_id):
+                        self.clickhouse_db.ensure_chat_in_db(found_chat_id, "")
+                        added_count += 1
+                        logger.info(
+                            "Добавлен чат из ссылки в БД: chat_id=%s",
+                            found_chat_id,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Ошибка при добавлении чата %s в БД: %s",
                         found_chat_id,
+                        e,
                     )
-            except Exception as e:
-                logger.warning(
-                    "Ошибка при добавлении чата %s в список загрузок: %s",
-                    found_chat_id,
-                    e,
-                )
-
-        if added_count > 0:
-            try:
-                self.config_manager.save()
+            if added_count > 0:
                 logger.info(
-                    "Сохранено %s новых чатов в конфигурацию для дальнейшей загрузки",
+                    "Сохранено %s новых чатов в ClickHouse для дальнейшей загрузки",
                     added_count,
                 )
-            except Exception as e:
-                logger.warning("Ошибка при сохранении конфигурации: %s", e)
+        else:
+            # Fallback: добавлять в config.yaml
+            for found_chat_id in self._found_chat_ids:
+                try:
+                    was_added = self.config_manager.add_chat_to_download_list(found_chat_id)
+                    if was_added:
+                        added_count += 1
+                        logger.info(
+                            "Добавлен чат из ссылки в список загрузок: chat_id=%s",
+                            found_chat_id,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Ошибка при добавлении чата %s в список загрузок: %s",
+                        found_chat_id,
+                        e,
+                    )
+
+            if added_count > 0:
+                try:
+                    self.config_manager.save()
+                    logger.info(
+                        "Сохранено %s новых чатов в config.yaml для дальнейшей загрузки",
+                        added_count,
+                    )
+                except Exception as e:
+                    logger.warning("Ошибка при сохранении конфигурации: %s", e)
 
         # Очистить множество найденных chat_id после обработки
         self._found_chat_ids.clear()

@@ -567,9 +567,30 @@ async def add_chat_to_downloads(body: AddChatRequest):
         return {"added": False, "message": "Не указан chat_id или username не найден"}
 
     try:
-        added = cm.add_chat_to_download_list(chat_id, body.title or body.username)
-        cm.save()
-        return {"added": added, "message": "Чат добавлен" if added else "Чат уже в списке"}
+        # Если ClickHouse включен - добавить в БД, иначе в config.yaml
+        ch_config = config.get("clickhouse", {})
+        if ch_config.get("enabled"):
+            from utils.clickhouse_db import ClickHouseMetadataDB
+            db = ClickHouseMetadataDB(ch_config)
+            
+            # Проверить, есть ли чат в БД
+            loop = asyncio.get_event_loop()
+            exists = await loop.run_in_executor(None, lambda: db.chat_exists(chat_id))
+            
+            if not exists:
+                # Добавить чат в БД
+                await loop.run_in_executor(
+                    None,
+                    lambda: db.ensure_chat_in_db(chat_id, body.title or body.username or "")
+                )
+                return {"added": True, "message": "Чат добавлен в БД"}
+            else:
+                return {"added": False, "message": "Чат уже в БД"}
+        else:
+            # Fallback: добавить в config.yaml
+            added = cm.add_chat_to_download_list(chat_id, body.title or body.username)
+            cm.save()
+            return {"added": added, "message": "Чат добавлен в config" if added else "Чат уже в config"}
     except Exception as e:
         return {"added": False, "message": str(e)}
 

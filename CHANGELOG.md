@@ -239,6 +239,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Исправлена race condition: чаты сохраняются ЛИБО в БД, ЛИБО в config (не дублируются)
   - Автоматическая миграция при старте: чаты из config.yaml переносятся в БД и config очищается
   - Упрощена логика: `_migrate_chat_to_db` заменен на `_ensure_chat_in_db` без удаления из config
+  - `update_config()` пропускается при включенном ClickHouse - состояние хранится только в БД
+  - API `/api/chats/add` добавляет чаты в БД (при включенном ClickHouse) вместо config.yaml
+  - `save_found_chats_to_config()` добавляет чаты из ссылок в БД при включенном ClickHouse
+  - Полностью исключена запись в config.yaml при включенном ClickHouse (кроме однократной миграции)
 - **Проверка архивов при `history_rebuild_if_missing`**
   - Вместо простой проверки `os.path.exists()` используется `validate_archive_file()`
   - Пустые или битые архивы теперь считаются невалидными и пересоздаются

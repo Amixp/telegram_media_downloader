@@ -1314,6 +1314,9 @@ class DownloadManager:
     def update_config(self, chat_id: Optional[int] = None) -> None:
         """
         Обновить конфигурацию (last_read_message_id, ids_to_retry для чата).
+        
+        Примечание: При включенном ClickHouse состояние хранится в БД,
+        запись в config.yaml не производится.
 
         Причины роста ids_to_retry (очередь повторов):
         - Нестабильное соединение: wrong session ID, обрывы, ConnectionError → сообщения
@@ -1328,6 +1331,14 @@ class DownloadManager:
         chat_id: Optional[int]
             ID чата для обновления состояния. Если None, используется chat_id из конфига.
         """
+        # Если ClickHouse включен - состояние хранится в БД, не в config.yaml
+        if self.clickhouse_db and self.clickhouse_db.enabled:
+            logger.debug(
+                "Пропуск update_config для чата %s - состояние хранится в ClickHouse",
+                chat_id
+            )
+            return
+        
         config = self.config.copy()
         if chat_id is None:
             chat_id = config.get("chat_id")
@@ -1379,7 +1390,7 @@ class DownloadManager:
                 len(ids_to_retry),
             )
 
-        # Обновить состояние чата
+        # Обновить состояние чата в config.yaml
         self.config_manager.update_chat_state(
             chat_id, config.get("last_read_message_id", 0), ids_to_retry
         )
@@ -1419,7 +1430,7 @@ class DownloadManager:
 
     def _ensure_chat_in_db(self, chat_id: int, chat_title: str = "") -> None:
         """Убедиться, что чат есть в ClickHouse БД.
-        
+
         Parameters
         ----------
         chat_id : int
@@ -1429,19 +1440,19 @@ class DownloadManager:
         """
         if not self.clickhouse_db or not self.clickhouse_db.enabled:
             return
-        
+
         # Добавить чат в БД, если его там нет
         if not self.clickhouse_db.chat_exists(chat_id):
             # Попытаться взять title из config.yaml (legacy)
             config_title = chat_title
             if "chats" in self.config and isinstance(self.config["chats"], list):
                 chat_config = next(
-                    (c for c in self.config["chats"] if c.get("chat_id") == chat_id), 
+                    (c for c in self.config["chats"] if c.get("chat_id") == chat_id),
                     None
                 )
                 if chat_config and chat_config.get("title"):
                     config_title = chat_config["title"]
-            
+
             self.clickhouse_db.ensure_chat_in_db(chat_id, config_title)
             logger.debug("Чат %s добавлен в БД", chat_id)
 
