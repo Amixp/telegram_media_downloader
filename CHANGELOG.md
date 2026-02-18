@@ -256,6 +256,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - При использовании ClickHouse для отслеживания прогресса создание архива необязательно
   - Архив истории можно создать отдельной командой после загрузки файлов
   - Предотвращает сброс last_read_message_id при отсутствии архива
+- **Рефакторинг передачи chat_id и chat_title**
+  - Убрана временная установка `self.config["chat_id"]` и `self.config["chat_title"]` в `begin_import_chat`
+  - `chat_id` и `chat_title` теперь передаются как параметры через цепочку методов:
+    `begin_import_chat` → `process_messages` → `download_chunk` → `download_media`
+  - Улучшена типобезопасность и явность кода
+  - Устаревшее поле `chat_id` в корне `config.yaml` больше не используется для временного хранения
 - **Проверка архивов при `history_rebuild_if_missing`**
   - Вместо простой проверки `os.path.exists()` используется `validate_archive_file()`
   - Пустые или битые архивы теперь считаются невалидными и пересоздаются

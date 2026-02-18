@@ -441,7 +441,7 @@ class DownloadManager:
         return f"msg_{message.id}"
 
     def _record_failed(
-        self, chat_id: int, message: Message, error_message: str = "", add_to_retry: bool = True
+        self, chat_id: int, message: Message, error_message: str = "", add_to_retry: bool = True, chat_title: str = ""
     ) -> None:
         """
         Записать неудачную загрузку в ClickHouse.
@@ -452,13 +452,13 @@ class DownloadManager:
         if add_to_retry:
             self.failed_ids.append((chat_id, message.id))
         if self.clickhouse_db.enabled:
-            self.clickhouse_db.save_file_download(
-                chat_id,
-                message.id,
-                "failed",
-                chat_title=str(self.config.get("chat_title", "")),
-                file_name=self._get_file_display_name_from_message(message),
-                file_path="",
+                self.clickhouse_db.save_file_download(
+                    chat_id,
+                    message.id,
+                    "failed",
+                    chat_title=chat_title,
+                    file_name=self._get_file_display_name_from_message(message),
+                    file_path="",
                 file_size=0,
                 error_message=(error_message or "")[:2048],
             )
@@ -598,6 +598,8 @@ class DownloadManager:
         download_directory: Optional[str] = None,
         progress: Optional[Progress] = None,
         task_id: Optional[TaskID] = None,
+        chat_id: Optional[int] = None,
+        chat_title: Optional[str] = None,
     ) -> int:
         """
         Загрузить медиа в соответствии с типом медиа.
@@ -675,12 +677,11 @@ class DownloadManager:
                         "skip_duplicates", True
                     )
 
-                    # Использовать chat_id из конфига (установлен в begin_import_chat),
+                    # Использовать переданный chat_id (из параметра метода),
                     # а не из message.chat.id, т.к. message.chat.id может быть без префикса -100
-                    # для супергрупп/каналов, а в конфиге хранится правильный chat_id с префиксом
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
-                        # Fallback: если chat_id не установлен в конфиге, использовать из сообщения
+                    # для супергрупп/каналов, а в параметре передаётся правильный chat_id с префиксом
+                    if chat_id is None or chat_id == 0:
+                        # Fallback: если chat_id не передан, использовать из сообщения
                         chat_id = message.chat.id if message.chat else 0
 
                     # Для веб-дашборда: стабильный task_id и короткое описание (имя файла)
@@ -709,7 +710,7 @@ class DownloadManager:
                         skipped_as_existing = True
                         self.downloaded_files[(chat_id, message.id)] = download_path
                         self.downloaded_ids.append((chat_id, message.id))
-                        
+
                         # Обновить статус в БД, чтобы не попадал в ids_to_retry
                         if self.clickhouse_db.enabled:
                             fhash = ""
@@ -722,7 +723,7 @@ class DownloadManager:
                                 chat_id,
                                 message.id,
                                 "existing",
-                                chat_title=str(self.config.get("chat_title", "")),
+                                chat_title=str(chat_title or ""),
                                 file_name=display_name,
                                 file_path=download_path,
                                 file_size=file_size or 0,
@@ -954,7 +955,7 @@ class DownloadManager:
                                     await loop.run_in_executor(
                                         None, lambda p=download_path: os.remove(p)
                                     )
-                                self._record_failed(chat_id, message, "validation_failed")
+                                self._record_failed(chat_id, message, "validation_failed", chat_title=chat_title or "")
                                 break
 
                             # Распаковка если это архив (теперь async)
@@ -975,7 +976,7 @@ class DownloadManager:
                                 chat_id,
                                 message.id,
                                 "downloaded",
-                                chat_title=str(self.config.get("chat_title", "")),
+                                chat_title=str(chat_title or ""),
                                 file_name=display_name,
                                 file_path=download_path,
                                 file_size=file_size or 0,
@@ -997,14 +998,13 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_reference_expired_skip", id=message.id)
                     )
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
+                    if chat_id is None or chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
                     # Не добавлять в ids_to_retry: refetch 3 раза не помог — файл недоступен,
                     # повтор при следующем запуске не поможет (то же самое).
                     self.permanent_skip_ids.append((chat_id, message.id))
                     self._record_failed(
-                        chat_id, message, "file_reference_expired", add_to_retry=False
+                        chat_id, message, "file_reference_expired", add_to_retry=False, chat_title=chat_title or ""
                     )
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
@@ -1028,10 +1028,9 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("timeout_skip", id=message.id)
                     )
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
+                    if chat_id is None or chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self._record_failed(chat_id, message, "timeout", add_to_retry=False)
+                    self._record_failed(chat_id, message, "timeout", add_to_retry=False, chat_title=chat_title or "")
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
                     if self.web_app and web_task_id is not None and file_size:
@@ -1052,10 +1051,9 @@ class DownloadManager:
                     logger.error(
                         self.i18n.t("file_migrate_error_skip", id=message.id, dc=dc_num)
                     )
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
+                    if chat_id is None or chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
-                    self._record_failed(chat_id, message, f"file_migrate dc={dc_num}")
+                    self._record_failed(chat_id, message, f"file_migrate dc={dc_num}", chat_title=chat_title or "")
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
                     if self.web_app and web_task_id is not None and file_size:
@@ -1083,10 +1081,9 @@ class DownloadManager:
                         logger.error(
                             self.i18n.t("connection_error_skip", id=message.id, error=error_str)
                         )
-                        chat_id = self.config.get("chat_id", 0)
-                        if chat_id == 0:
+                        if chat_id is None or chat_id == 0:
                             chat_id = message.chat.id if message.chat else 0
-                        self._record_failed(chat_id, message, error_str)
+                        self._record_failed(chat_id, message, error_str, chat_title=chat_title or "")
                         if progress and own_task_id is not None:
                             progress.update(own_task_id, visible=False)
                         if self.web_app and web_task_id is not None and file_size:
@@ -1109,8 +1106,7 @@ class DownloadManager:
                         message.id,
                     )
                     await asyncio.sleep(60)
-                    chat_id = self.config.get("chat_id", 0)
-                    if chat_id == 0:
+                    if chat_id is None or chat_id == 0:
                         chat_id = message.chat.id if message.chat else 0
                     if retry < 2:
                         logger.warning(
@@ -1127,7 +1123,7 @@ class DownloadManager:
                             pass
                         await asyncio.sleep(2)
                     else:
-                        self._record_failed(chat_id, message, err_msg)
+                        self._record_failed(chat_id, message, err_msg, chat_title=chat_title or "")
                         if progress and own_task_id is not None:
                             progress.update(own_task_id, visible=False)
                         if self.web_app and web_task_id is not None and file_size:
@@ -1164,7 +1160,7 @@ class DownloadManager:
                         pass
                     await asyncio.sleep(2)
                 else:
-                    self._record_failed(chat_id, message, str(e))
+                    self._record_failed(chat_id, message, str(e), chat_title=chat_title or "")
                     if progress and own_task_id is not None:
                         progress.update(own_task_id, visible=False)
                     if self.web_app and web_task_id is not None and file_size:
@@ -1186,6 +1182,8 @@ class DownloadManager:
         semaphore: Optional[asyncio.Semaphore] = None,
         progress: Optional[Progress] = None,
         task_id: Optional[TaskID] = None,
+        chat_id: Optional[int] = None,
+        chat_title: Optional[str] = None,
     ) -> int:
         """
         Загрузить медиа из Telegram.
@@ -1228,12 +1226,12 @@ class DownloadManager:
                 async with semaphore:
                     return await self.download_media(
                         client, message, media_types, file_formats, download_directory,
-                        progress=progress, task_id=task_id
+                        progress=progress, task_id=task_id, chat_id=chat_id, chat_title=chat_title
                     )
             else:
                 return await self.download_media(
                     client, message, media_types, file_formats, download_directory,
-                    progress=progress, task_id=task_id
+                    progress=progress, task_id=task_id, chat_id=chat_id, chat_title=chat_title
                 )
 
         message_ids = await asyncio.gather(
@@ -1242,12 +1240,12 @@ class DownloadManager:
         first_message = messages[0] if messages else None
         chat = getattr(first_message, "chat", None) if first_message else None
 
-        # Использовать chat_id из конфига (установлен в begin_import_chat),
+        # Использовать переданный chat_id (из параметра метода),
         # а не из message.chat.id, т.к. message.chat.id может быть без префикса -100
-        # для супергрупп/каналов, а в конфиге хранится правильный chat_id с префиксом
-        _chat_id = self.config.get("chat_id", 0)
-        if _chat_id == 0 and chat:
-            # Fallback: если chat_id не установлен в конфиге, использовать из сообщения
+        # для супергрупп/каналов, а в параметре передаётся правильный chat_id с префиксом
+        _chat_id = chat_id
+        if _chat_id is None or _chat_id == 0:
+            # Fallback: если chat_id не передан, использовать из сообщения
             _chat_id = chat.id if chat else 0
 
         logger.info(
@@ -1334,7 +1332,7 @@ class DownloadManager:
     def update_config(self, chat_id: Optional[int] = None) -> None:
         """
         Обновить конфигурацию (last_read_message_id, ids_to_retry для чата).
-        
+
         Примечание: При включенном ClickHouse состояние хранится в БД,
         запись в config.yaml не производится.
 
@@ -1358,7 +1356,7 @@ class DownloadManager:
                 chat_id
             )
             return
-        
+
         config = self.config.copy()
         if chat_id is None:
             chat_id = config.get("chat_id")
@@ -1759,6 +1757,8 @@ class DownloadManager:
                         semaphore,
                         progress=progress,
                         task_id=task_id,
+                        chat_id=chat_id,
+                        chat_title=chat_title,
                     )
                     # Web Update
                     if self.web_app:
@@ -1790,6 +1790,8 @@ class DownloadManager:
                 semaphore,
                 progress=progress,
                 task_id=task_id,
+                chat_id=chat_id,
+                chat_title=chat_title,
             )
 
         self.config["last_read_message_id"] = last_read_message_id
@@ -1860,10 +1862,6 @@ class DownloadManager:
                     chat_title or chat_id,
                     chat_id,
                 )
-
-                # Временно установить chat_id и chat_title для этого чата (логи/БД)
-                self.config["chat_id"] = chat_id
-                self.config["chat_title"] = chat_title or ""
 
                 try:
                     if self.web_app:
