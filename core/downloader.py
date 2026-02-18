@@ -1738,8 +1738,19 @@ class DownloadManager:
                     ]
                     return
 
+        new_messages_found = False
         try:
             async for message in messages_iter:  # type: ignore
+                # Логировать о наличии новых сообщений только один раз
+                if not new_messages_found:
+                    logger.info(
+                        "Чат %s (%s): обнаружены новые сообщения после message_id=%s",
+                        chat_title or chat_id,
+                        chat_id,
+                        last_read_message_id
+                    )
+                    new_messages_found = True
+                    
                 if end_date and message.date > end_date:
                     continue
                 if start_date and message.date < start_date:
@@ -1780,6 +1791,16 @@ class DownloadManager:
             logger.error(f"Ошибка при получении сообщений для чата {chat_id}: {e}")
             logger.error("Проверьте правильность chat_id в конфигурации")
             return
+        
+        # Логировать если новых сообщений не было найдено
+        if not new_messages_found and not ids_to_retry:
+            logger.info(
+                "Чат %s (%s): нет новых сообщений после message_id=%s",
+                chat_title or chat_id,
+                chat_id,
+                last_read_message_id
+            )
+        
         if messages_list:
             last_read_message_id = await self.process_messages(
                 client,
