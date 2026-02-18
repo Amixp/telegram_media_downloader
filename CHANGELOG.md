@@ -246,6 +246,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - API `/api/chats/add` добавляет чаты в БД (при включенном ClickHouse) вместо config.yaml
   - `save_found_chats_to_config()` добавляет чаты из ссылок в БД при включенном ClickHouse
   - Полностью исключена запись в config.yaml при включенном ClickHouse (кроме однократной миграции)
+- **Исправление бесконечной повторной обработки существующих файлов**
+  - При обнаружении существующего файла теперь обновляется статус в `file_downloads` (status='existing')
+  - `get_retry_message_ids()` исключает сообщения со статусом 'downloaded' и 'existing'
+  - Устранён цикл: файл с прошлыми ошибками больше не попадает в ids_to_retry после валидации на диске
 - **Проверка архивов при `history_rebuild_if_missing`**
   - Вместо простой проверки `os.path.exists()` используется `validate_archive_file()`
   - Пустые или битые архивы теперь считаются невалидными и пересоздаются

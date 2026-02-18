@@ -708,6 +708,26 @@ class DownloadManager:
                         download_path = existing_file
                         skipped_as_existing = True
                         self.downloaded_files[(chat_id, message.id)] = download_path
+                        self.downloaded_ids.append((chat_id, message.id))
+                        
+                        # Обновить статус в БД, чтобы не попадал в ids_to_retry
+                        if self.clickhouse_db.enabled:
+                            fhash = ""
+                            try:
+                                if download_path and os.path.isfile(download_path):
+                                    fhash = get_file_hash(download_path)
+                            except (OSError, IOError):
+                                pass
+                            self.clickhouse_db.save_file_download(
+                                chat_id,
+                                message.id,
+                                "existing",
+                                chat_title=str(self.config.get("chat_title", "")),
+                                file_name=display_name,
+                                file_path=download_path,
+                                file_size=file_size or 0,
+                                file_hash=fhash,
+                            )
                     elif (
                         self.clickhouse_db.enabled
                         and self.clickhouse_db.is_message_skipped_stale(chat_id, message.id)

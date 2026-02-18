@@ -1009,7 +1009,7 @@ class ClickHouseMetadataDB:
         Returns
         -------
         List[int]
-            Список message_id со статусом failed или skipped
+            Список message_id со статусом failed или skipped (исключая downloaded/existing)
         """
         if not self.enabled:
             return []
@@ -1018,7 +1018,7 @@ class ClickHouseMetadataDB:
             rows = client.execute(
                 """
                 SELECT message_id
-                FROM file_downloads
+                FROM file_downloads FINAL
                 WHERE chat_id = %(chat_id)s
                   AND status IN ('failed', 'skipped')
                 ORDER BY created_at DESC
