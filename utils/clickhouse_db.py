@@ -596,9 +596,9 @@ class ClickHouseMetadataDB:
             logger.warning("Ошибка чтения file_info из ClickHouse: %s", e)
             return None
 
-    def get_chat_meta(self, chat_id: int) -> Optional[Tuple[str, int, Optional[datetime]]]:
+    def get_chat_stats(self, chat_id: int) -> Optional[Tuple[str, int, Optional[datetime]]]:
         """
-        Метаданные одного чата: (title, message_count, last_message_date).
+        Статистика одного чата: (title, message_count, last_message_date).
         """
         if not self.enabled:
             return None
@@ -615,7 +615,7 @@ class ClickHouseMetadataDB:
             title = (row[0] or "").strip() or f"Chat {chat_id}"
             return (title, row[1], row[2])
         except Exception as e:
-            logger.warning("Ошибка чтения мета чата из ClickHouse: %s", e)
+            logger.warning("Ошибка чтения статистики чата из ClickHouse: %s", e)
             return None
 
     # --- Логи приложения ---

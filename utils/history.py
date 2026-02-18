@@ -197,7 +197,7 @@ class MessageHistory:
             return
 
         added_count = 0
-        
+
         # Если ClickHouse включен - добавлять в БД, иначе в config
         if self.clickhouse_db and self.clickhouse_db.enabled:
             for found_chat_id in self._found_chat_ids:
@@ -446,7 +446,7 @@ class MessageHistory:
         """Мета чата из ClickHouse (при primary_source)."""
         if not self.clickhouse_db or not self.clickhouse_db.enabled:
             return None
-        return self.clickhouse_db.get_chat_meta(chat_id)
+        return self.clickhouse_db.get_chat_stats(chat_id)
 
     @staticmethod
     def _parse_iso_dt(value: Any) -> Optional[datetime]:

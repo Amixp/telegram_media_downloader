@@ -572,11 +572,11 @@ async def add_chat_to_downloads(body: AddChatRequest):
         if ch_config.get("enabled"):
             from utils.clickhouse_db import ClickHouseMetadataDB
             db = ClickHouseMetadataDB(ch_config)
-            
+
             # Проверить, есть ли чат в БД
             loop = asyncio.get_event_loop()
             exists = await loop.run_in_executor(None, lambda: db.chat_exists(chat_id))
-            
+
             if not exists:
                 # Добавить чат в БД
                 await loop.run_in_executor(

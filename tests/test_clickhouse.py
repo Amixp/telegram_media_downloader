@@ -178,14 +178,14 @@ class TestClickHouseDB(unittest.TestCase):
         self.assertEqual(result[1][2], 50)
 
     @mock.patch("utils.clickhouse_db.Client")
-    def test_get_chat_meta(self, mock_client_class):
-        """get_chat_meta возвращает (title, message_count, last_message_date) или None."""
+    def test_get_chat_stats(self, mock_client_class):
+        """get_chat_stats возвращает (title, message_count, last_message_date) или None."""
         from datetime import datetime
         dt = datetime(2025, 1, 15)
         mock_client = mock_client_class.return_value
         mock_client.execute.return_value = [("My Chat", 42, dt)]
         db = ClickHouseMetadataDB(self.config)
-        result = db.get_chat_meta(chat_id=1)
+        result = db.get_chat_stats(chat_id=1)
         self.assertIsNotNone(result)
         title, count, last_date = result
         self.assertEqual(title, "My Chat")
@@ -193,12 +193,12 @@ class TestClickHouseDB(unittest.TestCase):
         self.assertEqual(last_date, dt)
 
     @mock.patch("utils.clickhouse_db.Client")
-    def test_get_chat_meta_empty(self, mock_client_class):
-        """get_chat_meta возвращает None при отсутствии сообщений."""
+    def test_get_chat_stats_empty(self, mock_client_class):
+        """get_chat_stats возвращает None при отсутствии сообщений."""
         mock_client = mock_client_class.return_value
         mock_client.execute.return_value = []
         db = ClickHouseMetadataDB(self.config)
-        result = db.get_chat_meta(chat_id=999)
+        result = db.get_chat_stats(chat_id=999)
         self.assertIsNone(result)
 
     @mock.patch("utils.clickhouse_db.Client")
