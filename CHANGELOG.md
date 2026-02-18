@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Makefile: команды для сборки фронтенда**
+  - Добавлена команда `make frontend-install` для установки зависимостей фронтенда
+  - Добавлена команда `make build-frontend` для сборки фронтенда
+
 ### Fixed
 - **Веб-дашборд: фильтр чатов по наличию сообщений не работал**
   - Исправлен API `/api/stats`: теперь возвращает все чаты из таблицы `chats`, включая чаты с 0 сообщений

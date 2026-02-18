@@ -13,7 +13,7 @@ ifeq ($(wildcard $(DEV_REQUIREMENTS_FILE)),)
 DEV_REQUIREMENTS_FILE := dev-requirements.txt
 endif
 
-.PHONY: install dev_install static_type_check pylint style_check test show_version
+.PHONY: install dev_install static_type_check pylint style_check test show_version build-frontend frontend-install
 
 show_version:
 	@echo "Python version: $(PYTHON_VERSION)"
@@ -42,3 +42,9 @@ test:
 		--cov-report html:${TEST_ARTIFACTS} \
 		--junit-xml=${TEST_ARTIFACTS}/media-downloader.xml \
 		tests/
+
+frontend-install:
+	cd web/ui && npm install
+
+build-frontend:
+	cd web/ui && npm run build
