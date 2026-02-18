@@ -290,24 +290,53 @@ class DownloadManager:
                             pass
                     else:
                         # Нет хеша в БД — полная валидация
-                        if not validate_downloads or validate_downloaded_media(
+                        is_valid = validate_downloaded_media(
                             db_path,
                             media_type,
                             db_size or expected_size,
                             check_signature=True,
-                        ):
+                        )
+                        if not is_valid:
+                            # Удалить битый файл если 0 байт
+                            try:
+                                file_size_on_disk = os.path.getsize(db_path)
+                                if file_size_on_disk == 0:
+                                    logger.info(
+                                        "Удаление битого файла 0 байт из БД: %s (message_id=%s)",
+                                        db_path,
+                                        message_id
+                                    )
+                                    os.remove(db_path)
+                            except (OSError, IOError) as e:
+                                logger.debug("Не удалось удалить битый файл %s: %s", db_path, e)
+                            return None
+                        if not validate_downloads or is_valid:
                             return db_path
 
         # Проверить файл по ожидаемому пути
         if self._is_exist(file_path):
             if validate_downloads:
-                if not validate_downloaded_media(
+                is_valid = validate_downloaded_media(
                     file_path,
                     media_type,
                     expected_size,
                     check_signature=True,
-                ):
-                    pass
+                )
+                if not is_valid:
+                    # Файл существует, но не прошел валидацию (0 байт, битый, неполный)
+                    try:
+                        file_size_on_disk = os.path.getsize(file_path)
+                        if file_size_on_disk == 0:
+                            # Удалить битый файл 0 байт для перезагрузки
+                            logger.info(
+                                "Удаление битого файла 0 байт: %s (message_id=%s)",
+                                file_path,
+                                message_id
+                            )
+                            os.remove(file_path)
+                    except (OSError, IOError) as e:
+                        logger.debug("Не удалось удалить битый файл %s: %s", file_path, e)
+                    return None
                 else:
                     return file_path
             else:
@@ -320,12 +349,25 @@ class DownloadManager:
             )
             if archived_path and self._is_exist(archived_path):
                 if validate_downloads:
-                    if not validate_downloaded_media(
+                    is_valid = validate_downloaded_media(
                         archived_path,
                         media_type,
                         expected_size,
                         check_signature=True,
-                    ):
+                    )
+                    if not is_valid:
+                        # Удалить битый файл если 0 байт
+                        try:
+                            file_size_on_disk = os.path.getsize(archived_path)
+                            if file_size_on_disk == 0:
+                                logger.info(
+                                    "Удаление битого файла 0 байт из архива: %s (message_id=%s)",
+                                    archived_path,
+                                    message_id
+                                )
+                                os.remove(archived_path)
+                        except (OSError, IOError) as e:
+                            logger.debug("Не удалось удалить битый файл %s: %s", archived_path, e)
                         return None
                 return archived_path
 
@@ -1750,7 +1792,7 @@ class DownloadManager:
                         last_read_message_id
                     )
                     new_messages_found = True
-                    
+
                 if end_date and message.date > end_date:
                     continue
                 if start_date and message.date < start_date:
@@ -1791,7 +1833,7 @@ class DownloadManager:
             logger.error(f"Ошибка при получении сообщений для чата {chat_id}: {e}")
             logger.error("Проверьте правильность chat_id в конфигурации")
             return
-        
+
         # Логировать если новых сообщений не было найдено
         if not new_messages_found and not ids_to_retry:
             logger.info(
@@ -1800,7 +1842,7 @@ class DownloadManager:
                 chat_id,
                 last_read_message_id
             )
-        
+
         if messages_list:
             last_read_message_id = await self.process_messages(
                 client,
