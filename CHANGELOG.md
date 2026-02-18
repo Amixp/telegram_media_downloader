@@ -250,6 +250,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - При обнаружении существующего файла теперь обновляется статус в `file_downloads` (status='existing')
   - `get_retry_message_ids()` исключает сообщения со статусом 'downloaded' и 'existing'
   - Устранён цикл: файл с прошлыми ошибками больше не попадает в ids_to_retry после валидации на диске
+
+### Changed
+- **Настройка history_rebuild_if_missing по умолчанию false**
+  - При использовании ClickHouse для отслеживания прогресса создание архива необязательно
+  - Архив истории можно создать отдельной командой после загрузки файлов
+  - Предотвращает сброс last_read_message_id при отсутствии архива
 - **Проверка архивов при `history_rebuild_if_missing`**
   - Вместо простой проверки `os.path.exists()` используется `validate_archive_file()`
   - Пустые или битые архивы теперь считаются невалидными и пересоздаются
