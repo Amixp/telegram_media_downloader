@@ -272,6 +272,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Для изменения списка чатов используйте: `python media_downloader.py --select-chats`
   - Параметр `interactive_chat_selection` в config.yaml больше не используется
   - Упрощён запуск в systemd, cron, docker и других неинтерактивных окружениях
+- **Исправление загрузки чатов из ClickHouse**
+  - Очередь загрузки теперь формируется напрямую из `selected_chats`
+  - Устранена проблема пустой очереди при использовании чатов из БД
+  - Чаты из ClickHouse теперь корректно обрабатываются без записи в config.yaml
 - **Проверка архивов при `history_rebuild_if_missing`**
   - Вместо простой проверки `os.path.exists()` используется `validate_archive_file()`
   - Пустые или битые архивы теперь считаются невалидными и пересоздаются

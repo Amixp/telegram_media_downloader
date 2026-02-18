@@ -76,7 +76,7 @@ async def main_async(args: argparse.Namespace):
         # Проверить, есть ли сохраненные чаты в конфиге или БД
         selected_chats = []
         config_has_chats = "chats" in config and isinstance(config["chats"], list) and len(config["chats"]) > 0
-        
+
         logger.debug("config_has_chats = %s", config_has_chats)
         logger.debug("clickhouse_db = %s", clickhouse_db)
         if clickhouse_db:
@@ -215,14 +215,14 @@ async def main_async(args: argparse.Namespace):
         download_manager = DownloadManager(config_manager, clickhouse_db=clickhouse_db)
         pagination_limit = config.get("download_settings", {}).get("pagination_limit", 100)
 
-        # Очередь загрузки: берём из конфига (с учётом order), чтобы порядок был стабильным и редактируемым
-        cfg_after = config_manager.config
+        # Очередь загрузки: преобразовать selected_chats в формат для begin_import_all_chats
+        # Формат: [{"chat_id": int, "title": str, "enabled": True, ...}, ...]
         queue_entries = [
-            c for c in cfg_after.get("chats", [])
-            if isinstance(c, dict) and c.get("enabled", True) and "chat_id" in c
+            {"chat_id": cid, "title": title, "enabled": True}
+            for cid, title, _ in selected_chats
         ]
-        if any("order" in c for c in queue_entries):
-            queue_entries.sort(key=lambda c: int(c.get("order", 10**9)) if str(c.get("order", "")).lstrip("-").isdigit() else 10**9)
+        
+        logger.info("Подготовлена очередь загрузки: %s чатов", len(queue_entries))
 
         # Запустить загрузку всех чатов с общим прогрессом
         downloader_task = asyncio.create_task(
