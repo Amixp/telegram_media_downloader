@@ -221,7 +221,7 @@ async def main_async(args: argparse.Namespace):
             {"chat_id": cid, "title": title, "enabled": True}
             for cid, title, _ in selected_chats
         ]
-        
+
         logger.info("Подготовлена очередь загрузки: %s чатов", len(queue_entries))
 
         # Запустить загрузку всех чатов с общим прогрессом
@@ -232,7 +232,8 @@ async def main_async(args: argparse.Namespace):
         )
 
         # Если включен веб-интерфейс, запустить сервер
-        if args.web:
+        web_enabled = args.web or config.get("web", {}).get("enabled", False)
+        if web_enabled:
             import uvicorn
             from web.app import app as web_app
 
