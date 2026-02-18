@@ -911,6 +911,12 @@ class ClickHouseMetadataDB:
         """
         if not self.enabled:
             return
+        
+        # Проверить существование чата перед вставкой
+        if self.chat_exists(chat_id):
+            logger.debug("Чат %s уже существует в БД", chat_id)
+            return
+        
         try:
             client = self._get_client()
             # INSERT для ReplacingMergeTree
@@ -924,7 +930,7 @@ class ClickHouseMetadataDB:
             logger.info("Чат %s добавлен в БД", chat_id)
         except Exception as e:
             # ReplacingMergeTree может вызвать конфликт при параллельной вставке
-            logger.debug("Чат %s уже существует в БД или ошибка вставки: %s", chat_id, e)
+            logger.debug("Чат %s: ошибка вставки (возможно уже существует): %s", chat_id, e)
 
     def get_all_chats(self) -> List[Tuple[int, str]]:
         """Получить список всех чатов из таблицы chats.

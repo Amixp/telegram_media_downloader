@@ -250,6 +250,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - При обнаружении существующего файла теперь обновляется статус в `file_downloads` (status='existing')
   - `get_retry_message_ids()` исключает сообщения со статусом 'downloaded' и 'existing'
   - Устранён цикл: файл с прошлыми ошибками больше не попадает в ids_to_retry после валидации на диске
+- **Уменьшена избыточность логов при запуске**
+  - `ensure_chat_in_db()` теперь проверяет существование чата перед вставкой
+  - Сообщение "Чат добавлен в БД" выводится только для новых чатов
+  - Для существующих чатов используется debug-лог вместо info
 
 ### Changed
 - **Настройка history_rebuild_if_missing по умолчанию false**
