@@ -546,6 +546,25 @@ async def get_message_file(chat_id: int, message_id: int):
     )
 
 
+@app.get("/api/chat/{chat_id}/message/{message_id}/exists")
+async def message_exists(chat_id: int, message_id: int):
+    """Проверить, есть ли сообщение в архиве (для локализации ссылок)."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    if not ch_config.get("enabled"):
+        return {"exists": False}
+
+    from utils.clickhouse_db import ClickHouseMetadataDB
+    db = ClickHouseMetadataDB(ch_config)
+    loop = asyncio.get_event_loop()
+    exists = await loop.run_in_executor(
+        None,
+        lambda: db.message_exists(chat_id, message_id),
+    )
+    return {"exists": exists}
+
+
 @app.get("/api/chat/{chat_id}/message/{message_id}/path")
 async def get_message_path(chat_id: int, message_id: int):
     """Вернуть абсолютные пути к файлу и родительской папке (для копирования / открытия папки)."""

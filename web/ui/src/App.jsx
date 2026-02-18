@@ -171,7 +171,7 @@ function formatMessageText(
   text,
   entities,
   chats,
-  { onOpenChat, onAddChat, onFilterByHashtag } = {},
+  { onOpenChat, onAddChat, onFilterByHashtag, onRefresh } = {},
 ) {
   if (!text || typeof text !== "string") return [text || ""];
   const ent = Array.isArray(entities) ? entities : [];
@@ -183,15 +183,31 @@ function formatMessageText(
         <a
           key={i}
           href="#"
-          onClick={(e) => {
+          className="text-emerald-400 hover:underline"
+          onClick={async (e) => {
             e.preventDefault();
+            const postId = seg.postId ?? undefined;
+            if (postId != null) {
+              try {
+                const res = await fetch(
+                  `/api/chat/${seg.matchedChat.chat_id}/message/${postId}/exists`,
+                );
+                const data = await res.json();
+                if (!data.exists) {
+                  onOpenChat?.({
+                    chat_id: seg.matchedChat.chat_id,
+                    title: seg.matchedChat.title,
+                  });
+                  return;
+                }
+              } catch (_) {}
+            }
             onOpenChat?.({
               chat_id: seg.matchedChat.chat_id,
               title: seg.matchedChat.title,
-              initialMessageId: seg.postId ?? undefined,
+              initialMessageId: postId,
             });
           }}
-          className="text-emerald-400 hover:underline"
         >
           {seg.value}
         </a>
@@ -208,33 +224,53 @@ function formatMessageText(
               const res = await fetch(`/api/chats/by-username/${seg.username}`);
               const data = await res.json();
               if (data.chat_id) {
-                // Чат найден в БД, открыть локально
+                // Чат найден в БД — проверить наличие сообщения, открыть локально
+                const postId = seg.postId ?? undefined;
+                if (postId != null) {
+                  try {
+                    const exRes = await fetch(
+                      `/api/chat/${data.chat_id}/message/${postId}/exists`,
+                    );
+                    const exData = await exRes.json();
+                    if (!exData.exists) {
+                      onOpenChat?.({
+                        chat_id: data.chat_id,
+                        title: seg.username,
+                      });
+                      return;
+                    }
+                  } catch (_) {}
+                }
                 onOpenChat?.({
                   chat_id: data.chat_id,
                   title: seg.username,
-                  initialMessageId: seg.postId ?? undefined,
+                  initialMessageId: postId,
                 });
               } else {
                 // Чат не найден, добавить в очередь
-                const addRes = await fetch("/api/chats/add", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
+                if (onAddChat) {
+                  await onAddChat({
                     chat_id: null,
                     title: seg.username,
                     username: seg.username,
-                  }),
-                });
-                const addData = await addRes.json();
-                if (addData.added !== undefined) {
-                  const msg = addData.added
-                    ? `Чат @${seg.username} добавлен в очередь на скачивание. Сообщение будет доступно после загрузки.`
-                    : "Чат уже в очереди на загрузку. Сообщение еще не скачано.";
-                  if (typeof window !== "undefined" && window.toast)
-                    window.toast(msg);
-                  else alert(msg);
+                  });
+                } else {
+                  try {
+                    await fetch("/api/chats/add", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        chat_id: null,
+                        title: seg.username,
+                        username: seg.username,
+                      }),
+                    });
+                  } catch (err) {
+                    console.error("Ошибка добавления чата:", err);
+                  }
                 }
-                // НЕ открываем внешнюю ссылку автоматически
+                onRefresh?.();
+                // Для username без chat_id переход невозможен, чат будет доступен после загрузки
               }
             } catch (err) {
               console.error("Ошибка обработки username-ссылки:", err);
@@ -340,15 +376,31 @@ function formatMessageText(
             <a
               key={key}
               href="#"
-              onClick={(e) => {
+              className="text-emerald-400 hover:underline"
+              onClick={async (e) => {
                 e.preventDefault();
+                const postId = tme.postId ?? undefined;
+                if (postId != null) {
+                  try {
+                    const res = await fetch(
+                      `/api/chat/${tme.matchedChat.chat_id}/message/${postId}/exists`,
+                    );
+                    const data = await res.json();
+                    if (!data.exists) {
+                      onOpenChat?.({
+                        chat_id: tme.matchedChat.chat_id,
+                        title: tme.matchedChat.title,
+                      });
+                      return;
+                    }
+                  } catch (_) {}
+                }
                 onOpenChat?.({
                   chat_id: tme.matchedChat.chat_id,
                   title: tme.matchedChat.title,
-                  initialMessageId: tme.postId ?? undefined,
+                  initialMessageId: postId,
                 });
               }}
-              className="text-emerald-400 hover:underline"
             >
               {content}
             </a>
@@ -373,7 +425,20 @@ function formatMessageText(
                     : null;
 
                   if (matchedLocalChat) {
-                    // Чат есть в базе - открыть локально
+                    // Чат есть в архиве — проверить наличие сообщения, открыть локально
+                    try {
+                      const exRes = await fetch(
+                        `/api/chat/${cid}/message/${postId}/exists`,
+                      );
+                      const exData = await exRes.json();
+                      if (!exData.exists) {
+                        onOpenChat?.({
+                          chat_id: cid,
+                          title: matchedLocalChat.title,
+                        });
+                        return;
+                      }
+                    } catch (_) {}
                     onOpenChat?.({
                       chat_id: cid,
                       title: matchedLocalChat.title,
@@ -382,29 +447,32 @@ function formatMessageText(
                     return;
                   }
 
-                  // Чата нет в локальной базе - добавить в загрузки
-                  try {
-                    const addRes = await fetch("/api/chats/add", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        chat_id: cid,
-                        title: segText,
-                      }),
+                  // Чата нет в архиве — добавить и перейти в чат с выделением
+                  if (onAddChat) {
+                    await onAddChat({
+                      chat_id: cid,
+                      title: segText,
                     });
-                    const addData = await addRes.json();
-                    if (addData.added !== undefined) {
-                      const msg = addData.added
-                        ? "Чат добавлен в список загрузок. Сообщение будет доступно после скачивания."
-                        : "Чат уже в списке загрузок. Сообщение еще не скачано.";
-                      if (typeof window !== "undefined" && window.toast)
-                        window.toast(msg);
-                      else alert(msg);
+                  } else {
+                    try {
+                      await fetch("/api/chats/add", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          chat_id: cid,
+                          title: segText,
+                        }),
+                      });
+                    } catch (err) {
+                      console.error("Ошибка добавления чата:", err);
                     }
-                  } catch (err) {
-                    console.error("Ошибка добавления чата:", err);
                   }
-                  // НЕ открываем внешнюю ссылку автоматически
+                  onRefresh?.();
+                  onOpenChat?.({
+                    chat_id: cid,
+                    title: segText || `Chat ${cid}`,
+                    initialMessageId: postId,
+                  });
                 }}
                 className="text-sky-400 hover:underline"
               >
@@ -433,33 +501,53 @@ function formatMessageText(
                   const res = await fetch(`/api/chats/by-username/${username}`);
                   const data = await res.json();
                   if (data.chat_id) {
-                    // Чат найден в БД, открыть локально
+                    // Чат найден в БД — проверить наличие сообщения, открыть локально
+                    const pid = postId ?? undefined;
+                    if (pid != null) {
+                      try {
+                        const exRes = await fetch(
+                          `/api/chat/${data.chat_id}/message/${pid}/exists`,
+                        );
+                        const exData = await exRes.json();
+                        if (!exData.exists) {
+                          onOpenChat?.({
+                            chat_id: data.chat_id,
+                            title: username,
+                          });
+                          return;
+                        }
+                      } catch (_) {}
+                    }
                     onOpenChat?.({
                       chat_id: data.chat_id,
                       title: username,
-                      initialMessageId: postId ?? undefined,
+                      initialMessageId: pid,
                     });
                   } else {
                     // Чат не найден, добавить в очередь
-                    const addRes = await fetch("/api/chats/add", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
+                    if (onAddChat) {
+                      await onAddChat({
                         chat_id: null,
                         title: username,
                         username: username,
-                      }),
-                    });
-                    const addData = await addRes.json();
-                    if (addData.added !== undefined) {
-                      const msg = addData.added
-                        ? `Чат @${username} добавлен в очередь на скачивание. Сообщение будет доступно после загрузки.`
-                        : "Чат уже в очереди на загрузку. Сообщение еще не скачано.";
-                      if (typeof window !== "undefined" && window.toast)
-                        window.toast(msg);
-                      else alert(msg);
+                      });
+                    } else {
+                      try {
+                        await fetch("/api/chats/add", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            chat_id: null,
+                            title: username,
+                            username: username,
+                          }),
+                        });
+                      } catch (err) {
+                        console.error("Ошибка добавления чата:", err);
+                      }
                     }
-                    // НЕ открываем внешнюю ссылку автоматически
+                    onRefresh?.();
+                    // Для username без chat_id переход невозможен, чат будет доступен после загрузки
                   }
                 } catch (err) {
                   console.error("Ошибка обработки username-ссылки:", err);
@@ -566,6 +654,7 @@ const ChatViewer = ({
   initialMessageId,
   chats = [],
   onOpenChat,
+  onRefresh,
   onChatRemoved,
   embedded = false,
   messageCount,
@@ -1053,6 +1142,7 @@ const ChatViewer = ({
                       <p className="text-sm text-slate-200 break-words whitespace-pre-wrap">
                         {formatMessageText(msg.text, msg.entities, chats, {
                           onOpenChat,
+                          onRefresh,
                           onFilterByHashtag: (tag) => setSearchQuery(tag),
                         })}
                       </p>
@@ -2027,6 +2117,7 @@ const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
                             chatList,
                             {
                               onOpenChat: handleOpenChat,
+                              onRefresh,
                             },
                           )}
                         </p>
@@ -2049,6 +2140,7 @@ const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
                 initialMessageId={selectedChat.initialMessageId}
                 chats={chatList}
                 onOpenChat={handleOpenChat}
+                onRefresh={onRefresh}
                 onChatRemoved={() => {
                   onRefresh?.();
                   setSelectedChat(null);
@@ -2289,6 +2381,7 @@ const Dashboard = () => {
                 chatId={selectedChat.chat_id}
                 title={selectedChat.title}
                 onClose={() => setSelectedChat(null)}
+                onRefresh={fetchStats}
                 onChatRemoved={() => {
                   setSelectedChat(null);
                   fetchStats();

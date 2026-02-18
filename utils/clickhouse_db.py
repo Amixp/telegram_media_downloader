@@ -532,6 +532,121 @@ class ClickHouseMetadataDB:
             logger.warning("Ошибка чтения страницы сообщений из ClickHouse: %s", e)
             return [], 0
 
+    def search_messages_all_chats(
+        self, q: str, offset: int = 0, limit: int = 100
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Нечеткий поиск сообщений по тексту во всех чатах.
+        Разбивает запрос на слова и ищет сообщения, содержащие любое из слов
+        (positionCaseInsensitive). Возвращает сообщения с chat_id, chat_title, message_id.
+        """
+        if not self.enabled:
+            return [], 0
+        q = (q or "").strip()
+        if not q:
+            return [], 0
+        words = [w.strip() for w in q.split() if w.strip()]
+        if not words:
+            return [], 0
+        offset = max(0, min(offset, 10_000_000))
+        limit = max(1, min(limit, 500))
+        try:
+            client = self._get_client()
+            params: Dict[str, Any] = {"limit": limit, "offset": offset}
+            conditions = []
+            for i, w in enumerate(words):
+                key = f"w{i}"
+                params[key] = w
+                conditions.append(f"positionCaseInsensitive(text, %({key})s) > 0")
+            where_clause = " OR ".join(conditions)
+
+            total_rows = client.execute(
+                f"""
+                SELECT count() FROM (
+                    SELECT 1 FROM messages
+                    WHERE {where_clause}
+                    GROUP BY chat_id, message_id
+                )""",
+                params,
+            )
+            total = int(total_rows[0][0]) if total_rows else 0
+
+            rows = client.execute(
+                f"""
+                SELECT chat_id, message_id, date, text, media_type, file_path, file_size,
+                    sender_id, chat_title, entities
+                FROM (
+                    SELECT chat_id, message_id, date, text, media_type, file_path, file_size,
+                        sender_id, chat_title, entities,
+                        row_number() OVER (
+                            PARTITION BY chat_id, message_id
+                            ORDER BY if(file_path != '', 1, 0) DESC, date DESC
+                        ) AS rn
+                    FROM messages
+                    WHERE {where_clause}
+                )
+                WHERE rn = 1
+                ORDER BY date DESC, message_id DESC
+                LIMIT %(limit)s OFFSET %(offset)s
+                """,
+                params,
+            )
+            result: List[Dict[str, Any]] = []
+            for row in rows:
+                entities_val = row[9] if len(row) > 9 else ""
+                (
+                    r_chat_id,
+                    msg_id,
+                    date_val,
+                    text_val,
+                    media_type_val,
+                    file_path_val,
+                    file_size_val,
+                    sender_val,
+                    title_val,
+                ) = row[:9]
+                date_iso = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val)
+                media_type_str = "" if media_type_val is None else str(media_type_val)
+                has_media = bool(media_type_str and media_type_str != "None")
+                entities_parsed = []
+                if entities_val and isinstance(entities_val, str) and entities_val.strip():
+                    try:
+                        entities_parsed = json.loads(entities_val)
+                    except Exception:
+                        pass
+                result.append({
+                    "id": msg_id,
+                    "chat_id": r_chat_id,
+                    "date": date_iso,
+                    "text": "" if text_val is None else str(text_val),
+                    "sender_id": sender_val or 0,
+                    "chat_title": "" if title_val is None else str(title_val),
+                    "has_media": has_media,
+                    "media_type": media_type_str,
+                    "file_size": file_size_val or 0,
+                    "downloaded_file": (file_path_val or "").strip() or None,
+                    "entities": entities_parsed,
+                })
+            return result, total
+        except Exception as e:
+            logger.warning("Ошибка поиска сообщений в ClickHouse: %s", e)
+            return [], 0
+
+    def message_exists(self, chat_id: int, message_id: int) -> bool:
+        """Проверить, есть ли сообщение в архиве (любая запись с таким chat_id и message_id)."""
+        if not self.enabled:
+            return False
+        try:
+            client = self._get_client()
+            rows = client.execute(
+                "SELECT 1 FROM messages WHERE chat_id = %(chat_id)s AND message_id = %(message_id)s LIMIT 1",
+                {"chat_id": chat_id, "message_id": message_id},
+            )
+            return len(rows) > 0
+        except Exception as e:
+            logger.warning("Ошибка проверки сообщения в ClickHouse: %s", e)
+            return False
+
     def get_message_file_path(
         self, chat_id: int, message_id: int
     ) -> Optional[str]:
@@ -848,6 +963,21 @@ class ClickHouseMetadataDB:
         except Exception as e:
             logger.warning("Ошибка чтения file_downloads из ClickHouse: %s", e)
             return [], 0
+
+    def clear_chat_messages(self, chat_id: int) -> None:
+        """
+        Удалить все сообщения чата из таблицы messages (метаданные чата и file_downloads не трогает).
+        """
+        if not self.enabled:
+            return
+        try:
+            client = self._get_client()
+            client.execute(
+                "ALTER TABLE messages DELETE WHERE chat_id = %(chat_id)s",
+                {"chat_id": chat_id},
+            )
+        except Exception as e:
+            logger.warning("Ошибка очистки сообщений чата %s из ClickHouse: %s", chat_id, e)
 
     def delete_chat_data(self, chat_id: int) -> None:
         """
