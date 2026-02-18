@@ -313,7 +313,7 @@ def main():
     # Обработка сигналов: отменяем ВСЕ задачи включая main_task
     # finally блок в main_async все равно выполнится
     import signal
-    
+
     def on_signal():
         try:
             logger.info("Получен сигнал прерывания, завершение работы...")
