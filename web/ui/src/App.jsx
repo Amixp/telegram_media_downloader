@@ -364,10 +364,10 @@ function formatMessageText(
                 onClick={async (ev) => {
                   ev.preventDefault();
                   // Проверить, есть ли чат в локальной базе
-                  const matchedLocalChat = Array.isArray(chats) 
-                    ? chats.find((c) => c.chat_id === cid) 
+                  const matchedLocalChat = Array.isArray(chats)
+                    ? chats.find((c) => c.chat_id === cid)
                     : null;
-                  
+
                   if (matchedLocalChat) {
                     // Чат есть в базе - открыть локально
                     onOpenChat?.({
@@ -377,7 +377,7 @@ function formatMessageText(
                     });
                     return;
                   }
-                  
+
                   // Чата нет в локальной базе - добавить в загрузки
                   try {
                     const addRes = await fetch("/api/chats/add", {

@@ -233,6 +233,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - После выбора чатов через TUI они автоматически сохраняются в БД
   - Список чатов хранится в БД, config.yaml используется только как fallback
   - Новые методы в ClickHouseMetadataDB: `get_all_chats()`, `save_selected_chats()`
+  - Исправлена race condition: чаты сохраняются ЛИБО в БД, ЛИБО в config (не дублируются)
+  - Автоматическая миграция при старте: чаты из config.yaml переносятся в БД и config очищается
+  - Упрощена логика: `_migrate_chat_to_db` заменен на `_ensure_chat_in_db` без удаления из config
 - **Проверка архивов при `history_rebuild_if_missing`**
   - Вместо простой проверки `os.path.exists()` используется `validate_archive_file()`
   - Пустые или битые архивы теперь считаются невалидными и пересоздаются

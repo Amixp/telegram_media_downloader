@@ -1417,9 +1417,9 @@ class DownloadManager:
 
         return last_read_message_id, ids_to_retry
 
-    def _migrate_chat_to_db(self, chat_id: int, chat_title: str = "") -> None:
-        """Мигрировать чат из config.yaml в ClickHouse.
-
+    def _ensure_chat_in_db(self, chat_id: int, chat_title: str = "") -> None:
+        """Убедиться, что чат есть в ClickHouse БД.
+        
         Parameters
         ----------
         chat_id : int
@@ -1429,49 +1429,21 @@ class DownloadManager:
         """
         if not self.clickhouse_db or not self.clickhouse_db.enabled:
             return
-
-        # Проверить, есть ли чат в БД
-        if self.clickhouse_db.chat_exists(chat_id):
-            # Чат есть в БД - удалить из config.yaml
-            if "chats" in self.config and isinstance(self.config["chats"], list):
-                original_count = len(self.config["chats"])
-                self.config["chats"] = [
-                    c for c in self.config["chats"]
-                    if c.get("chat_id") != chat_id
-                ]
-                if len(self.config["chats"]) < original_count:
-                    self.config_manager.save()
-                    logger.info(
-                        "Чат %s удален из config.yaml (уже есть в БД)",
-                        chat_id,
-                    )
-        else:
-            # Чата нет в БД - добавить
-            # Попытаться взять title из config.yaml
+        
+        # Добавить чат в БД, если его там нет
+        if not self.clickhouse_db.chat_exists(chat_id):
+            # Попытаться взять title из config.yaml (legacy)
             config_title = chat_title
             if "chats" in self.config and isinstance(self.config["chats"], list):
                 chat_config = next(
-                    (c for c in self.config["chats"] if c.get("chat_id") == chat_id),
+                    (c for c in self.config["chats"] if c.get("chat_id") == chat_id), 
                     None
                 )
                 if chat_config and chat_config.get("title"):
                     config_title = chat_config["title"]
-
+            
             self.clickhouse_db.ensure_chat_in_db(chat_id, config_title)
-
-            # После добавления в БД - удалить из config.yaml
-            if "chats" in self.config and isinstance(self.config["chats"], list):
-                original_count = len(self.config["chats"])
-                self.config["chats"] = [
-                    c for c in self.config["chats"]
-                    if c.get("chat_id") != chat_id
-                ]
-                if len(self.config["chats"]) < original_count:
-                    self.config_manager.save()
-                    logger.info(
-                        "Чат %s мигрирован в БД и удален из config.yaml",
-                        chat_id,
-                    )
+            logger.debug("Чат %s добавлен в БД", chat_id)
 
     async def begin_import_chat(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self,
@@ -1571,8 +1543,8 @@ class DownloadManager:
         ids_to_retry = []
 
         if self.clickhouse_db and self.clickhouse_db.enabled:
-            # МИГРАЦИЯ: добавить чат в БД, если его там нет, или удалить из config, если есть
-            self._migrate_chat_to_db(chat_id, chat_title or "")
+            # Убедиться, что чат есть в БД
+            self._ensure_chat_in_db(chat_id, chat_title or "")
 
             # Приоритет: запросить из БД
             db_last_id = self.clickhouse_db.get_last_processed_message_id(chat_id)

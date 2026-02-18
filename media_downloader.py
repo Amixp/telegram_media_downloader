@@ -149,12 +149,33 @@ async def main_async(args: argparse.Namespace):
             await session_manager.stop()
             return
 
-        # Сохранить выбранные чаты в БД (если включена) и конфиг
+        # Сохранить выбранные чаты: в БД (если включена) ИЛИ в config (fallback)
         if clickhouse_db and clickhouse_db.enabled:
+            # Сохранение только в БД
             clickhouse_db.save_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
-
-        config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
-        config_manager.save()
+            logger.info("Чаты сохранены в ClickHouse")
+            
+            # Миграция: если есть чаты в config.yaml - переместить в БД и очистить config
+            if config_has_chats and "chats" in config and isinstance(config["chats"], list):
+                migrated_count = 0
+                for chat_entry in config["chats"]:
+                    if isinstance(chat_entry, dict) and "chat_id" in chat_entry:
+                        cid = chat_entry["chat_id"]
+                        title = chat_entry.get("title", "")
+                        # Добавить в БД, если его там нет
+                        if not clickhouse_db.chat_exists(cid):
+                            clickhouse_db.ensure_chat_in_db(cid, title)
+                            migrated_count += 1
+                # Очистить config после миграции
+                if migrated_count > 0:
+                    config["chats"] = []
+                    config_manager.save()
+                    logger.info("Мигрировано %s чатов из config.yaml в ClickHouse", migrated_count)
+        else:
+            # Fallback: сохранение только в config.yaml (ClickHouse отключен)
+            config_manager.set_selected_chats([(cid, title) for (cid, title, _) in selected_chats])
+            config_manager.save()
+            logger.info("Чаты сохранены в config.yaml")
 
         # Настройка логирования в ClickHouse (если включено)
         if clickhouse_db and clickhouse_db.enabled:
