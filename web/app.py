@@ -9,7 +9,7 @@ from queue import Empty, Queue
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -18,7 +18,7 @@ logger = logging.getLogger("web_dashboard")
 # --- Резолвер username → chat_id и chat_id → title (фоновый поток + применение на main) ---
 RESOLVE_JOBS: Dict[str, Dict[str, Any]] = {}
 _RESOLVE_JOBS_LOCK = threading.Lock()
-_RESOLVER_QUEUE: Queue = Queue()  # Элементы: ("username", job_id, username, title) или ("chat_id", job_id, chat_id)
+_RESOLVER_QUEUE: Queue = Queue()  # ("username",...) | ("chat_id",...) | ("profile_photo",...) | ("full_profile", chat_id, result_holder)
 _PENDING_APPLY_QUEUE: Queue = Queue()  # Элементы: (job_id, chat_id, title, username) или (job_id, chat_id, title, None) для title-only
 _RESOLVER_THREAD: Optional[threading.Thread] = None
 _RESOLVER_LOOP: Optional[asyncio.AbstractEventLoop] = None
@@ -415,6 +415,67 @@ async def get_chat_info(chat_id: int):
     }
 
 
+@app.get("/api/chat/{chat_id}/profile-photo")
+async def get_chat_profile_photo(chat_id: int):
+    """Фото профиля/чата из Telegram (через резолвер, может занять несколько секунд)."""
+    result_holder = {"event": threading.Event(), "result": None, "error": None}
+    try:
+        _RESOLVER_QUEUE.put(("profile_photo", chat_id, result_holder))
+        if not result_holder["event"].wait(timeout=25):
+            return Response(status_code=504, content=b"")
+        if result_holder.get("error"):
+            return Response(status_code=404, content=b"")
+        data = result_holder.get("result")
+        if not data:
+            return Response(status_code=404, content=b"")
+        return Response(content=data, media_type="image/jpeg")
+    except Exception as e:
+        logger.exception("profile-photo %s: %s", chat_id, e)
+        return Response(status_code=500, content=b"")
+
+
+@app.get("/api/chat/{chat_id}/full-info")
+async def get_chat_full_info(chat_id: int):
+    """Метаданные из БД + полный профиль из Telegram (about, участники, ссылка-приглашение и т.д.)."""
+    from utils.config import ConfigManager
+    config = ConfigManager().load()
+    ch_config = config.get("clickhouse", {})
+    base = {"description": "", "profile_link": "", "username": ""}
+    if ch_config.get("enabled"):
+        from utils.clickhouse_db import ClickHouseMetadataDB
+        db = ClickHouseMetadataDB(ch_config)
+        loop = asyncio.get_event_loop()
+        meta = await loop.run_in_executor(None, lambda: db.get_chat_meta(chat_id))
+        if meta:
+            base["description"] = meta.get("description", "")
+            base["profile_link"] = meta.get("profile_link", "")
+            base["username"] = meta.get("username", "")
+
+    result_holder = {"event": threading.Event(), "result": None, "error": None}
+    try:
+        _RESOLVER_QUEUE.put(("full_profile", chat_id, result_holder))
+        if not result_holder["event"].wait(timeout=25):
+            return {**base, "live_error": "timeout"}
+        if result_holder.get("error"):
+            return {**base, "live_error": result_holder["error"]}
+        live = result_holder.get("result") or {}
+        return {
+            **base,
+            "about": live.get("about") or base.get("description", ""),
+            "participants_count": live.get("participants_count"),
+            "admins_count": live.get("admins_count"),
+            "kicked_count": live.get("kicked_count"),
+            "banned_count": live.get("banned_count"),
+            "linked_chat_id": live.get("linked_chat_id"),
+            "invite_link": live.get("invite_link"),
+            "pinned_msg_id": live.get("pinned_msg_id"),
+            "online_count": live.get("online_count"),
+        }
+    except Exception as e:
+        logger.exception("full-info %s: %s", chat_id, e)
+        return {**base, "live_error": str(e)}
+
+
 @app.get("/api/chats/by-username/{username}")
 async def get_chat_by_username(username: str):
     """Найти chat_id по username."""
@@ -717,6 +778,16 @@ def _resolve_username_worker() -> None:
         logger.warning("Резолвер username недоступен (нет зависимостей): %s", e)
         return
 
+    async def _resolver_ensure_authorized(cl):
+        """Подключиться и проверить авторизацию без запроса телефона/кода в консоли."""
+        await cl.connect()
+        if not await cl.is_user_authorized():
+            await cl.disconnect()
+            raise RuntimeError(
+                "Сессия резолвера (media_downloader_resolver) не авторизована. "
+                "Инструкция: docs/RESOLVER_SESSION.md"
+            )
+
     while True:
         try:
             item = _RESOLVER_QUEUE.get(timeout=2.0)
@@ -768,7 +839,7 @@ def _resolve_username_worker() -> None:
                     )
 
                     async def _resolve_user():
-                        await client.start()
+                        await _resolver_ensure_authorized(client)
                         entity = await client.get_entity(username)
                         return entity
 
@@ -836,7 +907,7 @@ def _resolve_username_worker() -> None:
                     )
 
                     async def _resolve_chat():
-                        await client.start()
+                        await _resolver_ensure_authorized(client)
                         entity = await client.get_entity(chat_id)
                         return entity
 
@@ -868,6 +939,148 @@ def _resolve_username_worker() -> None:
                             async def _disconnect():
                                 await client.disconnect()
 
+                            loop.run_until_complete(_disconnect())
+                        except Exception:
+                            pass
+            elif task_type == "profile_photo":
+                chat_id, result_holder = item[1], item[2]
+                client = None
+                try:
+                    from io import BytesIO
+                    cm = ConfigManager()
+                    config = cm.load()
+                    api_id = config.get("api_id")
+                    api_hash = config.get("api_hash")
+                    if not api_id or not api_hash:
+                        result_holder["error"] = "В конфиге не заданы api_id/api_hash"
+                        result_holder["event"].set()
+                        continue
+                    proxy_config = get_proxy_config(config)
+                    download_settings = config.get("download_settings") or {}
+                    request_retries = download_settings.get("request_retries", 15)
+                    session_name = "media_downloader_resolver"
+                    client = TelegramClient(
+                        session_name,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                        proxy=proxy_config,
+                        device_model=DEVICE_MODEL,
+                        system_version=SYSTEM_VERSION,
+                        app_version=APP_VERSION,
+                        lang_code=LANG_CODE,
+                        request_retries=request_retries,
+                    )
+
+                    async def _get_profile_photo():
+                        await _resolver_ensure_authorized(client)
+                        entity = await client.get_entity(chat_id)
+                        buf = BytesIO()
+                        await client.download_profile_photo(entity, file=buf)
+                        return buf.getvalue()
+
+                    photo_bytes = loop.run_until_complete(_get_profile_photo())
+                    if photo_bytes:
+                        result_holder["result"] = photo_bytes
+                    else:
+                        result_holder["error"] = "Нет фото"
+                    result_holder["event"].set()
+                except Exception as e:
+                    logger.exception("Резолв profile_photo chat_id %s: %s", chat_id, e)
+                    result_holder["error"] = str(e)
+                    result_holder["event"].set()
+                finally:
+                    if client:
+                        try:
+                            async def _disconnect():
+                                await client.disconnect()
+                            loop.run_until_complete(_disconnect())
+                        except Exception:
+                            pass
+            elif task_type == "full_profile":
+                chat_id, result_holder = item[1], item[2]
+                client = None
+                try:
+                    from telethon.tl.types import Channel
+                    from telethon.tl.functions import channels, messages
+
+                    cm = ConfigManager()
+                    config = cm.load()
+                    api_id = config.get("api_id")
+                    api_hash = config.get("api_hash")
+                    if not api_id or not api_hash:
+                        result_holder["error"] = "В конфиге не заданы api_id/api_hash"
+                        result_holder["event"].set()
+                        continue
+                    proxy_config = get_proxy_config(config)
+                    download_settings = config.get("download_settings") or {}
+                    request_retries = download_settings.get("request_retries", 15)
+                    session_name = "media_downloader_resolver"
+                    client = TelegramClient(
+                        session_name,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                        proxy=proxy_config,
+                        device_model=DEVICE_MODEL,
+                        system_version=SYSTEM_VERSION,
+                        app_version=APP_VERSION,
+                        lang_code=LANG_CODE,
+                        request_retries=request_retries,
+                    )
+
+                    async def _get_full_profile():
+                        await _resolver_ensure_authorized(client)
+                        entity = await client.get_entity(chat_id)
+                        out = {
+                            "about": "",
+                            "participants_count": None,
+                            "admins_count": None,
+                            "kicked_count": None,
+                            "banned_count": None,
+                            "linked_chat_id": None,
+                            "invite_link": None,
+                            "pinned_msg_id": None,
+                            "online_count": None,
+                        }
+                        from telethon.tl.types import Chat
+                        if isinstance(entity, Channel):
+                            full = await client(channels.GetFullChannelRequest(channel=entity))
+                            fc = full.full_chat
+                            out["about"] = (getattr(fc, "about", None) or "").strip()
+                            out["participants_count"] = getattr(fc, "participants_count", None)
+                            out["admins_count"] = getattr(fc, "admins_count", None)
+                            out["kicked_count"] = getattr(fc, "kicked_count", None)
+                            out["banned_count"] = getattr(fc, "banned_count", None)
+                            out["linked_chat_id"] = getattr(fc, "linked_chat_id", None)
+                            out["pinned_msg_id"] = getattr(fc, "pinned_msg_id", None)
+                            out["online_count"] = getattr(fc, "online_count", None)
+                            ei = getattr(fc, "exported_invite", None)
+                            if ei is not None and getattr(ei, "link", None):
+                                out["invite_link"] = (ei.link or "").strip()
+                        elif isinstance(entity, Chat):
+                            full = await client(messages.GetFullChatRequest(chat_id=entity.id))
+                            fc = full.full_chat
+                            out["about"] = (getattr(fc, "about", None) or "").strip()
+                            out["pinned_msg_id"] = getattr(fc, "pinned_msg_id", None)
+                            participants = getattr(fc, "participants", None)
+                            if participants is not None:
+                                out["participants_count"] = getattr(participants, "participants_count", None) or len(getattr(participants, "participants", []))
+                            ei = getattr(fc, "exported_invite", None)
+                            if ei is not None and getattr(ei, "link", None):
+                                out["invite_link"] = (ei.link or "").strip()
+                        return out
+
+                    data = loop.run_until_complete(_get_full_profile())
+                    result_holder["result"] = data
+                    result_holder["event"].set()
+                except Exception as e:
+                    logger.exception("Резолв full_profile chat_id %s: %s", chat_id, e)
+                    result_holder["error"] = str(e)
+                    result_holder["event"].set()
+                finally:
+                    if client:
+                        try:
+                            async def _disconnect():
+                                await client.disconnect()
                             loop.run_until_complete(_disconnect())
                         except Exception:
                             pass

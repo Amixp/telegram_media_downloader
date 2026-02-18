@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Добавлена команда `make build-frontend` для сборки фронтенда
 
 ### Fixed
+- **Резолвер: нет запроса телефона/кода в консоли**
+  - Вместо `client.start()` используется `connect()` + проверка `is_user_authorized()`: при неавторизованной сессии резолвер не запрашивает ввод в консоли, а возвращает ошибку с инструкцией.
+  - Однократная авторизация сессии `media_downloader_resolver` описана в `docs/RESOLVER_SESSION.md`.
 - **Резолвер: исправлена ошибка asyncio.Future и блокировка SQLite**
   - Исправлена ошибка `TypeError: An asyncio.Future, a coroutine or an awaitable is required` при резолве chat_id → title: все вызовы Telethon (`client.start()`, `client.get_entity()`, `client.disconnect()`) обёрнуты в явные корутины для корректной работы в отдельном потоке
   - Исправлена блокировка SQLite при параллельном использовании сессии: резолвер использует отдельную сессию `media_downloader_resolver` вместо `media_downloader`, что устраняет конфликт с основной сессией
