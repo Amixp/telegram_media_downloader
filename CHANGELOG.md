@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Добавлена команда `make build-frontend` для сборки фронтенда
 
 ### Fixed
+- **Downloader: NameError в валидации медиа**
+  - В `utils/validation.py` добавлен `logger = logging.getLogger(__name__)`, чтобы исключить падение на `name 'logger' is not defined` при проверке битых/неполных файлов.
+- **Веб-профиль чата: убрано блокирующее ожидание в API**
+  - Для загрузки расширенного профиля и фото чата добавлен неблокирующий flow `request -> job_id -> polling` вместо долгого HTTP-ожидания.
+  - Модалка профиля теперь запрашивает `POST /api/chat/{chat_id}/full-info/request` и `POST /api/chat/{chat_id}/profile-photo/request`, затем опрашивает `GET /api/chats/resolve/{job_id}` до `done/error`.
+  - Фото профиля выдается отдельным эндпоинтом по готовой задаче: `GET /api/chat/profile-photo/{job_id}`.
+- **Резолвер: задачи выполняются только между загрузками файлов**
+  - Если есть активные скачивания, задачи резолвера автоматически откладываются в очередь и не конкурируют с загрузчиком.
+  - В модалке профиля удалён таймаут polling задач, чтобы не показывать ложный `timeout` во время длительных загрузок.
 - **Резолвер: нет запроса телефона/кода в консоли**
   - Вместо `client.start()` используется `connect()` + проверка `is_user_authorized()`: при неавторизованной сессии резолвер не запрашивает ввод в консоли, а возвращает ошибку с инструкцией.
   - Однократная авторизация сессии `media_downloader_resolver` описана в `docs/RESOLVER_SESSION.md`.

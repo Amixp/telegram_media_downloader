@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 # Сигнатуры контейнеров (magic bytes)
 # MP4/MOV/3GP: ...ftyp at 4:8
