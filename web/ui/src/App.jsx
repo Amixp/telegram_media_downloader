@@ -171,10 +171,22 @@ function formatMessageText(
   text,
   entities,
   chats,
-  { onOpenChat, onAddChat, onFilterByHashtag, onRefresh } = {},
+  {
+    onOpenChat,
+    onAddChat,
+    onFilterByHashtag,
+    onRefresh,
+    autoAddChatsFromLinks = true,
+  } = {},
 ) {
   if (!text || typeof text !== "string") return [text || ""];
   const ent = Array.isArray(entities) ? entities : [];
+  const openExternalLink = (href) => {
+    if (!href) return;
+    if (typeof window !== "undefined") {
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
+  };
   if (ent.length === 0) {
     return parseTelegramLinks(text, chats).map((seg, i) =>
       seg.type === "text" ? (
@@ -219,6 +231,10 @@ function formatMessageText(
           rel="noopener noreferrer"
           onClick={async (ev) => {
             ev.preventDefault();
+            if (!autoAddChatsFromLinks) {
+              openExternalLink(seg.href);
+              return;
+            }
             // Попробовать найти чат по username через API
             try {
               const res = await fetch(`/api/chats/by-username/${seg.username}`);
@@ -419,6 +435,10 @@ function formatMessageText(
                 rel="noopener noreferrer"
                 onClick={async (ev) => {
                   ev.preventDefault();
+                  if (!autoAddChatsFromLinks) {
+                    openExternalLink(url);
+                    return;
+                  }
                   // Проверить, есть ли чат в локальной базе
                   const matchedLocalChat = Array.isArray(chats)
                     ? chats.find((c) => c.chat_id === cid)
@@ -496,6 +516,10 @@ function formatMessageText(
               rel="noopener noreferrer"
               onClick={async (ev) => {
                 ev.preventDefault();
+                if (!autoAddChatsFromLinks) {
+                  openExternalLink(url);
+                  return;
+                }
                 // Попробовать найти чат по username через API
                 try {
                   const res = await fetch(`/api/chats/by-username/${username}`);
@@ -833,6 +857,7 @@ const ChatViewer = ({
   const [loadingBottom, setLoadingBottom] = useState(false);
   const loadingRef = useRef(false);
   const [openFileManager, setOpenFileManager] = useState(false);
+  const [autoAddChatsFromLinks, setAutoAddChatsFromLinks] = useState(true);
   const [pathModal, setPathModal] = useState(null);
   const virtuosoRef = useRef(null);
   const scrolledToInitialRef = useRef(false);
@@ -946,8 +971,14 @@ const ChatViewer = ({
   useEffect(() => {
     fetch("/api/settings")
       .then((r) => r.json())
-      .then((d) => setOpenFileManager(!!d.open_file_manager))
-      .catch(() => setOpenFileManager(false));
+      .then((d) => {
+        setOpenFileManager(!!d.open_file_manager);
+        setAutoAddChatsFromLinks(!!d.auto_add_chats_from_links);
+      })
+      .catch(() => {
+        setOpenFileManager(false);
+        setAutoAddChatsFromLinks(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -1384,6 +1415,7 @@ const ChatViewer = ({
                         {formatMessageText(msg.text, msg.entities, chats, {
                           onOpenChat,
                           onRefresh,
+                          autoAddChatsFromLinks,
                           onFilterByHashtag: (tag) => setSearchQuery(tag),
                         })}
                       </p>
@@ -2389,6 +2421,7 @@ const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
                             {
                               onOpenChat: handleOpenChat,
                               onRefresh,
+                              autoAddChatsFromLinks: true,
                             },
                           )}
                         </p>

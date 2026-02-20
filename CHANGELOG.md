@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Добавлена команда `make build-frontend` для сборки фронтенда
 
 ### Fixed
+- **Локализация ссылок: добавлен кэш проверок и учтена настройка auto_add**
+  - `GET /api/chats/by-username/{username}` и `GET /api/chat/{chat_id}/message/{message_id}/exists` используют in-memory TTL-кэш, чтобы не делать повторные одинаковые запросы в БД.
+  - `POST /api/chats/resolve` для username проверяет `download_settings.auto_add_chats_from_links` и возвращает `403`, если автодобавление ссылок отключено.
+  - Фронт читает `auto_add_chats_from_links` из `/api/settings` и при отключении автодобавления открывает внешнюю ссылку `t.me`.
 - **Резолвер: priority-очередь, дедлайн 5 сек и retry-стадии**
   - Добавлены `stage`/`deadline_at`/`retries` в job-статус резолвера и статус `deadline_exceeded`.
   - Резолвер обрабатывает задачи через priority-очередь (`username/chat_id` приоритетнее профиля/фото).

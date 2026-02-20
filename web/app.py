@@ -26,6 +26,10 @@ _PENDING_APPLY_QUEUE: Queue = Queue()  # Элементы: (job_id, chat_id, tit
 _RESOLVER_THREAD: Optional[threading.Thread] = None
 _RESOLVER_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _RESOLVER_JOB_DEADLINE_SEC = 5.0
+_LINK_CACHE_TTL_SEC = 3000.0
+_LINK_CACHE_LOCK = threading.Lock()
+_USERNAME_CHAT_CACHE: Dict[str, tuple[float, Optional[int]]] = {}
+_MESSAGE_EXISTS_CACHE: Dict[tuple[int, int], tuple[float, bool]] = {}
 _RESOLVER_STATS: Dict[str, Any] = {
     "total": 0,
     "done": 0,
@@ -74,6 +78,50 @@ def _record_resolver_latency(job_id: Optional[str]) -> None:
         return
     latency_ms = max(0.0, (time.time() - float(created)) * 1000.0)
     _RESOLVER_STATS["latency_ms_total"] = float(_RESOLVER_STATS.get("latency_ms_total", 0.0)) + latency_ms
+
+
+def _cache_get_username_chat_id(username: str) -> Optional[Optional[int]]:
+    key = (username or "").strip().lower()
+    if not key:
+        return None
+    now = time.time()
+    with _LINK_CACHE_LOCK:
+        rec = _USERNAME_CHAT_CACHE.get(key)
+        if not rec:
+            return None
+        expires_at, value = rec
+        if expires_at < now:
+            _USERNAME_CHAT_CACHE.pop(key, None)
+            return None
+        return value
+
+
+def _cache_set_username_chat_id(username: str, chat_id: Optional[int]) -> None:
+    key = (username or "").strip().lower()
+    if not key:
+        return
+    with _LINK_CACHE_LOCK:
+        _USERNAME_CHAT_CACHE[key] = (time.time() + _LINK_CACHE_TTL_SEC, chat_id)
+
+
+def _cache_get_message_exists(chat_id: int, message_id: int) -> Optional[bool]:
+    now = time.time()
+    key = (int(chat_id), int(message_id))
+    with _LINK_CACHE_LOCK:
+        rec = _MESSAGE_EXISTS_CACHE.get(key)
+        if not rec:
+            return None
+        expires_at, value = rec
+        if expires_at < now:
+            _MESSAGE_EXISTS_CACHE.pop(key, None)
+            return None
+        return value
+
+
+def _cache_set_message_exists(chat_id: int, message_id: int, exists: bool) -> None:
+    key = (int(chat_id), int(message_id))
+    with _LINK_CACHE_LOCK:
+        _MESSAGE_EXISTS_CACHE[key] = (time.time() + _LINK_CACHE_TTL_SEC, bool(exists))
 
 app = FastAPI(title="Telegram Media Downloader Dashboard")
 
@@ -508,6 +556,9 @@ async def request_chat_full_info(chat_id: int):
 @app.get("/api/chats/by-username/{username}")
 async def get_chat_by_username(username: str):
     """Найти chat_id по username."""
+    cached = _cache_get_username_chat_id(username)
+    if cached is not None:
+        return {"chat_id": cached}
     from utils.config import ConfigManager
     config = ConfigManager().load()
     ch_config = config.get("clickhouse", {})
@@ -521,6 +572,7 @@ async def get_chat_by_username(username: str):
         None,
         lambda: db.get_chat_id_by_username(username)
     )
+    _cache_set_username_chat_id(username, int(chat_id) if chat_id is not None else None)
     return {"chat_id": chat_id}
 
 
@@ -703,6 +755,9 @@ async def get_message_file(chat_id: int, message_id: int):
 @app.get("/api/chat/{chat_id}/message/{message_id}/exists")
 async def message_exists(chat_id: int, message_id: int):
     """Проверить, есть ли сообщение в архиве (для локализации ссылок)."""
+    cached = _cache_get_message_exists(chat_id, message_id)
+    if cached is not None:
+        return {"exists": cached}
     from utils.config import ConfigManager
     config = ConfigManager().load()
     ch_config = config.get("clickhouse", {})
@@ -716,6 +771,7 @@ async def message_exists(chat_id: int, message_id: int):
         None,
         lambda: db.message_exists(chat_id, message_id),
     )
+    _cache_set_message_exists(chat_id, message_id, bool(exists))
     return {"exists": exists}
 
 
@@ -942,6 +998,7 @@ def _resolve_username_worker() -> None:
                             "title": title,
                             "username": username,
                         }
+                    _cache_set_username_chat_id(username, int(chat_id))
                     _RESOLVER_STATS["done"] = int(_RESOLVER_STATS.get("done", 0)) + 1
                     _record_resolver_latency(job_id)
                     _PENDING_APPLY_QUEUE.put((job_id, chat_id, title, username))
@@ -960,6 +1017,7 @@ def _resolve_username_worker() -> None:
                         continue
                     if _is_username_not_found_error(e):
                         logger.warning("Резолв username %s: username не найден", username)
+                        _cache_set_username_chat_id(username, None)
                         with _RESOLVE_JOBS_LOCK:
                             RESOLVE_JOBS[job_id] = {
                                 "status": "error",
@@ -1511,7 +1569,12 @@ class ResolveRequest(BaseModel):
 async def resolve_username(body: ResolveRequest):
     """Запустить фоновый резолв username → chat_id или chat_id → title. Возвращает job_id для опроса статуса."""
     from fastapi import HTTPException
+    from utils.config import ConfigManager
     if body.username:
+        config = ConfigManager().load()
+        auto_add_enabled = bool((config.get("download_settings") or {}).get("auto_add_chats_from_links", False))
+        if not auto_add_enabled:
+            raise HTTPException(status_code=403, detail="auto_add_chats_from_links disabled")
         username = (body.username or "").strip().lstrip("@")
         if not username:
             raise HTTPException(status_code=400, detail="username обязателен")
@@ -1628,7 +1691,11 @@ async def get_settings():
     from utils.config import ConfigManager
     config = ConfigManager().load()
     web_cfg = config.get("web") or {}
-    return {"open_file_manager": bool(web_cfg.get("open_file_manager"))}
+    download_settings = config.get("download_settings") or {}
+    return {
+        "open_file_manager": bool(web_cfg.get("open_file_manager")),
+        "auto_add_chats_from_links": bool(download_settings.get("auto_add_chats_from_links", False)),
+    }
 
 
 @app.websocket("/ws/progress")
