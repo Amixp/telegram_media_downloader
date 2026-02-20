@@ -11,11 +11,6 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Буфер логов для пакетной записи в ClickHouse
-_LOG_BUFFER: List[Dict[str, Any]] = []
-_LOG_BUFFER_MAX = 100
-
-
 class ClickHouseMetadataDB:
     """Класс для работы с ClickHouse в качестве хранилища метаданных."""
 
@@ -43,9 +38,31 @@ class ClickHouseMetadataDB:
         self.password = config.get("password", "")
         self.database = config.get("database", "telegram_downloader")
         self.batch_size = config.get("batch_size", 1000)
+        self.insert_settings = config.get("insert_settings", {}) or {}
 
         self._client = None
-        self._message_buffer = []
+        self._message_buffer = []  # legacy; flush path keeps backward compatibility
+
+    def _get_insert_settings(self, table: str) -> Dict[str, Any]:
+        """Получить settings для асинхронной вставки с перезаписью per-table."""
+        default_settings = {
+            "async_insert": 1,
+            "wait_for_async_insert": 0,
+            "async_insert_busy_timeout_ms": 200,
+            "async_insert_stale_timeout_ms": 2000,
+            "max_insert_threads": 4,
+        }
+        table_defaults = {
+            "chats": {"wait_for_async_insert": 1},
+            "messages": {"wait_for_async_insert": 0},
+            "file_downloads": {"wait_for_async_insert": 0},
+            "app_logs": {"wait_for_async_insert": 0},
+        }
+        cfg_default = self.insert_settings.get("default", {}) if isinstance(self.insert_settings, dict) else {}
+        cfg_tables = self.insert_settings.get("tables", {}) if isinstance(self.insert_settings, dict) else {}
+        cfg_table = cfg_tables.get(table, {}) if isinstance(cfg_tables, dict) else {}
+        merged = {**default_settings, **table_defaults.get(table, {}), **cfg_default, **cfg_table}
+        return {k: v for k, v in merged.items() if v is not None}
 
     def _get_client(self):
         """Создать или вернуть существующий клиент."""
@@ -183,21 +200,18 @@ class ClickHouseMetadataDB:
         if not self.enabled:
             return
 
-        self._message_buffer.append(data)
-        if len(self._message_buffer) >= self.batch_size:
-            await self.flush()
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._insert_messages, [data])
+        except Exception as e:
+            logger.error("Ошибка при записи сообщения в ClickHouse: %s", e)
 
     async def flush(self):
         """Принудительно записать буфер в БД."""
-        if not self.enabled or not self._message_buffer:
+        if not self.enabled:
             return
-
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._insert_messages, self._message_buffer)
-            self._message_buffer = []
-        except Exception as e:
-            logger.error(f"Ошибка при записи в ClickHouse: {e}")
+        # Batch flush больше не используется; метод оставлен для обратной совместимости.
+        return
 
     def _insert_messages(self, messages: List[Dict[str, Any]]):
         """Вставка сообщений (синхронно для executor)."""
@@ -227,7 +241,7 @@ class ClickHouseMetadataDB:
             )
             for m in messages
         ]
-        client.execute(query, data)
+        client.execute(query, data, settings=self._get_insert_settings("messages"))
 
     async def update_chat_info(
         self,
@@ -270,6 +284,7 @@ class ClickHouseMetadataDB:
         client.execute(
             query,
             [(chat_id, "" if title is None else str(title), datetime.now(), message_count, total_size, desc, uname)],
+            settings=self._get_insert_settings("chats"),
         )
 
     def get_existing_message_ids(self, chat_id: int, message_ids: List[int]) -> Set[int]:
@@ -737,48 +752,32 @@ class ClickHouseMetadataDB:
 
     def save_log(self, level: str, message: str, logger_name: str = "") -> None:
         """
-        Добавить запись лога в буфер (пакетная запись при flush_logs).
+        Сохранить запись лога в ClickHouse (асинхронная вставка на стороне CH).
         """
         if not self.enabled:
             return
-        global _LOG_BUFFER  # pylint: disable=global-statement
-        _LOG_BUFFER.append({
-            "ts": datetime.now(),
-            "level": (level or "INFO").upper(),
-            "logger_name": (logger_name or "").strip()[:255],
-            "message": (message or "")[: 65535],
-        })
-        if len(_LOG_BUFFER) >= _LOG_BUFFER_MAX:
-            self._flush_log_buffer()
-
-    def _flush_log_buffer(self) -> None:
-        """Записать буфер логов в БД."""
-        global _LOG_BUFFER  # pylint: disable=global-statement
-        if not _LOG_BUFFER:
-            return
         try:
             client = self._get_client()
-            data = [
-                (r["ts"], r["level"], r["logger_name"], r["message"])
-                for r in _LOG_BUFFER
-            ]
             client.execute(
                 "INSERT INTO app_logs (ts, level, logger_name, message) VALUES",
-                data,
+                [(
+                    datetime.now(),
+                    (level or "INFO").upper(),
+                    (logger_name or "").strip()[:255],
+                    (message or "")[: 65535],
+                )],
+                settings=self._get_insert_settings("app_logs"),
             )
-            _LOG_BUFFER.clear()
         except Exception as e:
             logger.warning("Ошибка записи логов в ClickHouse: %s", e)
 
+    def _flush_log_buffer(self) -> None:
+        """Legacy no-op: пакетный буфер логов больше не используется."""
+        return
+
     async def flush_logs(self) -> None:
-        """Принудительно записать буфер логов (async)."""
-        if not self.enabled:
-            return
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._flush_log_buffer)
-        except Exception as e:
-            logger.warning("Ошибка flush логов: %s", e)
+        """Legacy no-op: логи пишутся сразу."""
+        return
 
     def get_logs(
         self,
@@ -898,6 +897,7 @@ class ClickHouseMetadataDB:
                     datetime.now(),
                     (file_hash or "")[: 64],
                 )],
+                settings=self._get_insert_settings("file_downloads"),
             )
         except Exception as e:
             logger.warning("Ошибка записи file_download в ClickHouse: %s", e)
@@ -1056,6 +1056,7 @@ class ClickHouseMetadataDB:
                 VALUES (%(chat_id)s, %(title)s, now(), 0, 0)
                 """,
                 {"chat_id": chat_id, "title": title or f"Chat {chat_id}"},
+                settings=self._get_insert_settings("chats"),
             )
             logger.info("Чат %s добавлен в БД", chat_id)
         except Exception as e:

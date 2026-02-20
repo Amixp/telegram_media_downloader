@@ -247,30 +247,30 @@ function formatMessageText(
                   initialMessageId: postId,
                 });
               } else {
-                // Чат не найден, добавить в очередь
-                if (onAddChat) {
-                  await onAddChat({
-                    chat_id: null,
-                    title: seg.username,
-                    username: seg.username,
+                // Чат не найден — запустить резолв и открыть плейсхолдер
+                try {
+                  const resolveRes = await fetch("/api/chats/resolve", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      username: seg.username,
+                      title: `@${seg.username}`,
+                    }),
                   });
-                } else {
-                  try {
-                    await fetch("/api/chats/add", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        chat_id: null,
-                        title: seg.username,
-                        username: seg.username,
-                      }),
+                  const resolveData = await resolveRes.json();
+                  if (resolveData.job_id) {
+                    onOpenChat?.({
+                      chat_id: `pending:${resolveData.job_id}`,
+                      title: `@${seg.username}`,
+                      initialMessageId: seg.postId ?? undefined,
                     });
-                  } catch (err) {
-                    console.error("Ошибка добавления чата:", err);
                   }
+                } catch (err) {
+                  console.error("Ошибка резолва username:", err);
+                  if (typeof window !== "undefined" && window.toast)
+                    window.toast("Ошибка при поиске чата");
+                  else alert("Ошибка при поиске чата");
                 }
-                onRefresh?.();
-                // Для username без chat_id переход невозможен, чат будет доступен после загрузки
               }
             } catch (err) {
               console.error("Ошибка обработки username-ссылки:", err);
@@ -524,30 +524,30 @@ function formatMessageText(
                       initialMessageId: pid,
                     });
                   } else {
-                    // Чат не найден, добавить в очередь
-                    if (onAddChat) {
-                      await onAddChat({
-                        chat_id: null,
-                        title: username,
-                        username: username,
+                    // Чат не найден — запустить резолв и открыть плейсхолдер
+                    try {
+                      const resolveRes = await fetch("/api/chats/resolve", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          username: username,
+                          title: `@${username}`,
+                        }),
                       });
-                    } else {
-                      try {
-                        await fetch("/api/chats/add", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            chat_id: null,
-                            title: username,
-                            username: username,
-                          }),
+                      const resolveData = await resolveRes.json();
+                      if (resolveData.job_id) {
+                        onOpenChat?.({
+                          chat_id: `pending:${resolveData.job_id}`,
+                          title: `@${username}`,
+                          initialMessageId: postId ?? undefined,
                         });
-                      } catch (err) {
-                        console.error("Ошибка добавления чата:", err);
                       }
+                    } catch (err) {
+                      console.error("Ошибка резолва username:", err);
+                      if (typeof window !== "undefined" && window.toast)
+                        window.toast("Ошибка при поиске чата");
+                      else alert("Ошибка при поиске чата");
                     }
-                    onRefresh?.();
-                    // Для username без chat_id переход невозможен, чат будет доступен после загрузки
                   }
                 } catch (err) {
                   console.error("Ошибка обработки username-ссылки:", err);
@@ -594,6 +594,121 @@ const ChatProfileModal = ({
   messageCount,
   totalSize,
 }) => {
+  const [photoError, setPhotoError] = useState(false);
+  const [fullInfo, setFullInfo] = useState(null);
+  const [fullInfoLoading, setFullInfoLoading] = useState(false);
+  const [profilePhotoUrl, setProfilePhotoUrl] = useState(null);
+
+  useEffect(() => {
+    if (chatId == null) return;
+    let cancelled = false;
+    setFullInfo(null);
+    setFullInfoLoading(true);
+    setPhotoError(false);
+    setProfilePhotoUrl(null);
+
+    const pollJob = async (jobId, onDone, onError) => {
+      while (!cancelled) {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        const res = await fetch(`/api/chats/resolve/${jobId}`);
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.status === "done") {
+          onDone?.(data);
+          return;
+        }
+        if (data.status === "error" || data.status === "deadline_exceeded") {
+          onError?.(data);
+          return;
+        }
+      }
+    };
+
+    const loadFullInfo = async () => {
+      try {
+        const res = await fetch(`/api/chat/${chatId}/full-info/request`, {
+          method: "POST",
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.base) setFullInfo(data.base);
+        const jobId = data.job_id;
+        if (!jobId) {
+          setFullInfo((prev) => ({
+            ...(prev || {}),
+            live_error: "job_id отсутствует",
+          }));
+          return;
+        }
+        await pollJob(
+          jobId,
+          (jobData) => setFullInfo(jobData),
+          (jobErr) =>
+            setFullInfo((prev) => ({
+              ...(prev || {}),
+              live_error:
+                jobErr?.error || "Не удалось загрузить данные профиля",
+            })),
+        );
+      } catch {
+        if (!cancelled) {
+          setFullInfo((prev) => ({
+            ...(prev || {}),
+            live_error: "Ошибка запроса профиля",
+          }));
+        }
+      } finally {
+        if (!cancelled) setFullInfoLoading(false);
+      }
+    };
+
+    const loadPhoto = async () => {
+      try {
+        const res = await fetch(`/api/chat/${chatId}/profile-photo/request`, {
+          method: "POST",
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        const jobId = data.job_id;
+        if (!jobId) {
+          setPhotoError(true);
+          return;
+        }
+        await pollJob(
+          jobId,
+          () =>
+            setProfilePhotoUrl(
+              `/api/chat/profile-photo/${jobId}?t=${Date.now()}`,
+            ),
+          () => setPhotoError(true),
+        );
+      } catch {
+        if (!cancelled) setPhotoError(true);
+      }
+    };
+
+    loadFullInfo();
+    loadPhoto();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId]);
+
+  const about =
+    (fullInfo?.about != null && fullInfo.about !== ""
+      ? fullInfo.about
+      : description) || "";
+  const inviteLink = fullInfo?.invite_link || null;
+  const participantsCount = fullInfo?.participants_count;
+  const adminsCount = fullInfo?.admins_count;
+  const kickedCount = fullInfo?.kicked_count;
+  const bannedCount = fullInfo?.banned_count;
+  const linkedChatId = fullInfo?.linked_chat_id;
+  const pinnedMsgId = fullInfo?.pinned_msg_id;
+  const onlineCount = fullInfo?.online_count;
+  const liveError = fullInfo?.live_error;
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto"
@@ -604,15 +719,25 @@ const ChatProfileModal = ({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="p-6 overflow-y-auto flex flex-col gap-4">
-          <h3 className="text-lg font-bold text-white truncate shrink-0">
-            {title}
-          </h3>
-          {username && (
-            <p className="text-sm text-slate-300 shrink-0">@{username}</p>
-          )}
-          {description && (
+          <div className="flex items-start gap-4 shrink-0">
+            {profilePhotoUrl && !photoError && (
+              <img
+                src={profilePhotoUrl}
+                alt=""
+                className="w-16 h-16 rounded-full object-cover bg-slate-700/50 border border-slate-600/50 shrink-0"
+                onError={() => setPhotoError(true)}
+              />
+            )}
+            <div className="min-w-0 flex-1">
+              <h3 className="text-lg font-bold text-white truncate">{title}</h3>
+              {username && (
+                <p className="text-sm text-slate-300">@{username}</p>
+              )}
+            </div>
+          </div>
+          {about && (
             <p className="text-sm text-slate-300 whitespace-pre-wrap break-words">
-              {description}
+              {about}
             </p>
           )}
           {profile_link && (
@@ -625,6 +750,41 @@ const ChatProfileModal = ({
               {profile_link}
             </a>
           )}
+          {fullInfoLoading && (
+            <p className="text-xs text-slate-500">
+              Загрузка данных из Telegram…
+            </p>
+          )}
+          {liveError && !fullInfoLoading && (
+            <p className="text-xs text-amber-500">{liveError}</p>
+          )}
+          <div className="flex flex-col gap-1.5 text-sm text-slate-400">
+            {participantsCount != null && (
+              <p>Участников: {participantsCount}</p>
+            )}
+            {adminsCount != null && <p>Администраторов: {adminsCount}</p>}
+            {onlineCount != null && <p>Онлайн: {onlineCount}</p>}
+            {kickedCount != null && kickedCount > 0 && (
+              <p>Исключено: {kickedCount}</p>
+            )}
+            {bannedCount != null && bannedCount > 0 && (
+              <p>Заблокировано: {bannedCount}</p>
+            )}
+            {linkedChatId != null && <p>Связанный чат: {linkedChatId}</p>}
+            {pinnedMsgId != null && (
+              <p>Закреплённое сообщение ID: {pinnedMsgId}</p>
+            )}
+            {inviteLink && (
+              <a
+                href={inviteLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sky-400 hover:underline break-all"
+              >
+                Ссылка-приглашение
+              </a>
+            )}
+          </div>
           {(messageCount != null || totalSize != null) && (
             <p className="text-xs text-slate-400 shrink-0">
               {messageCount != null && `${messageCount} сообщ.`}
@@ -660,6 +820,10 @@ const ChatViewer = ({
   messageCount,
   totalSize,
 }) => {
+  const isPending =
+    typeof chatId === "string" && String(chatId).startsWith("pending:");
+  const resolveJobId = isPending ? String(chatId).slice(8) : null;
+
   const [items, setItems] = useState([]);
   const [startOffset, setStartOffset] = useState(0);
   const [firstItemIndex, setFirstItemIndex] = useState(0);
@@ -675,25 +839,66 @@ const ChatViewer = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [showInChatSearchPanel, setShowInChatSearchPanel] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [resolveError, setResolveError] = useState(null);
   const [chatInfo, setChatInfo] = useState({
     description: "",
     profile_link: "",
     username: "",
   });
 
+  useEffect(() => {
+    if (!resolveJobId || !onOpenChat) return;
+    setResolveError(null);
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/chats/resolve/${resolveJobId}`);
+        const data = await res.json();
+        if (data.status === "done") {
+          onRefresh?.();
+          onOpenChat?.({
+            chat_id: data.chat_id,
+            title: data.title ?? title,
+            initialMessageId: initialMessageId ?? undefined,
+          });
+          return true;
+        }
+        if (data.status === "error" || data.status === "deadline_exceeded") {
+          setResolveError(data.error || "Ошибка резолва");
+          return true;
+        }
+      } catch (e) {
+        setResolveError(String(e.message || e));
+        return true;
+      }
+      return false;
+    };
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      const done = await poll();
+      if (!done && !cancelled) setTimeout(tick, 1500);
+    };
+    const t = setTimeout(tick, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [resolveJobId, onOpenChat, onRefresh, title, initialMessageId]);
+
   const fetchPage = useCallback(
     async (offset, limit = PAGE_SIZE) => {
+      if (isPending) return { messages: [], total: 0 };
       const res = await fetch(
         `/api/chat/${chatId}/messages?offset=${offset}&limit=${limit}`,
       );
       const data = await res.json();
       return data;
     },
-    [chatId],
+    [chatId, isPending],
   );
 
   const loadInitial = useCallback(async () => {
-    if (loadingRef.current) return;
+    if (isPending || loadingRef.current) return;
     loadingRef.current = true;
     setLoading(true);
     try {
@@ -706,15 +911,15 @@ const ChatViewer = ({
       setLoading(false);
       loadingRef.current = false;
     }
-  }, [fetchPage]);
+  }, [fetchPage, isPending]);
 
   useEffect(() => {
     scrolledToInitialRef.current = false;
   }, [chatId]);
 
   useEffect(() => {
-    loadInitial();
-  }, [chatId, loadInitial]);
+    if (!isPending) loadInitial();
+  }, [chatId, loadInitial, isPending]);
 
   useEffect(() => {
     if (
@@ -942,6 +1147,42 @@ const ChatViewer = ({
   const wrapperClass = embedded
     ? "flex flex-col flex-1 min-h-0"
     : "fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4";
+
+  if (isPending) {
+    const pendingOuterClass = embedded
+      ? "flex flex-col flex-1 min-h-0 rounded-lg border border-slate-700/50 p-8"
+      : "fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm";
+    return (
+      <div
+        className={pendingOuterClass}
+        {...(!embedded && { onClick: handleBackdropClick })}
+      >
+        <div
+          className={
+            embedded
+              ? "flex flex-col flex-1"
+              : "glass-card p-8 max-w-4xl w-full mx-4 max-h-[98vh] flex flex-col"
+          }
+          {...(!embedded && { onClick: (e) => e.stopPropagation() })}
+        >
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-white">{title}</h2>
+            {!embedded && onClose && (
+              <button
+                onClick={onClose}
+                className="p-2 text-slate-400 hover:text-white rounded"
+              >
+                <ChevronLeft size={20} />
+              </button>
+            )}
+          </div>
+          <p className="text-slate-400 text-center py-12">
+            {resolveError ? resolveError : "Ищем chat_id…"}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (loading && items.length === 0) {
     const loadingOuterClass = embedded
@@ -1840,23 +2081,41 @@ const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
       .finally(() => setMessageSearchLoading(false));
   }, [enabled, debouncedMessageQuery]);
 
+  const pendingChatEntry =
+    selectedChat &&
+    typeof selectedChat.chat_id === "string" &&
+    selectedChat.chat_id.startsWith("pending:")
+      ? [
+          {
+            chat_id: selectedChat.chat_id,
+            title: selectedChat.title || "…",
+            count: 0,
+            size: 0,
+            username: "",
+            _pending: true,
+          },
+        ]
+      : [];
+
   const filteredChats = useMemo(() => {
     const q = (debouncedQuery || "").trim().toLowerCase();
     const hasMessageSearch =
       (debouncedMessageQuery || "").trim() && messageSearchResults.length > 0;
-    let result = [...chatList];
+    let result = [...pendingChatEntry, ...chatList];
 
-    // Если есть поиск по сообщениям - сначала фильтруем по результатам поиска
+    // Если есть поиск по сообщениям - фильтруем по результатам (pending всегда показываем)
     if (hasMessageSearch) {
       const chatIdsFromSearch = new Set(
         messageSearchResults.map((msg) => msg.chat_id),
       );
-      result = result.filter((c) => chatIdsFromSearch.has(c.chat_id));
+      result = result.filter(
+        (c) => c._pending || chatIdsFromSearch.has(c.chat_id),
+      );
     }
 
-    // Фильтр: показывать все чаты или только с сообщениями (применяется всегда, кроме случая поиска по сообщениям)
+    // Фильтр: показывать все чаты или только с сообщениями (pending всегда показываем)
     if (!showAllChats) {
-      result = result.filter((c) => (c.count || 0) > 0);
+      result = result.filter((c) => c._pending || (c.count || 0) > 0);
     }
 
     // Если есть поиск по названию чата - фильтруем по нему
@@ -1894,6 +2153,7 @@ const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
     messageSearchResults,
     showAllChats,
     sortBy,
+    pendingChatEntry,
   ]);
 
   const handleOpenChat = useCallback(
@@ -2059,12 +2319,23 @@ const ChatsView = ({ enabled, chatList = [], onRefresh }) => {
                 >
                   <p className="text-sm font-bold text-white truncate">
                     {chat.title || `Chat ${chat.chat_id}`}
+                    {chat._pending && (
+                      <span className="ml-1 text-sky-400 font-normal text-xs">
+                        — поиск…
+                      </span>
+                    )}
                   </p>
                   <p className="text-[10px] text-slate-400 font-medium mt-0.5">
-                    {chat.size != null
-                      ? `${(chat.size / (1024 * 1024 * 1024)).toFixed(2)} GB`
-                      : ""}{" "}
-                    {chat.count != null ? `• ${chat.count} msgs` : ""}
+                    {chat._pending
+                      ? "ожидание chat_id"
+                      : [
+                          chat.size != null
+                            ? `${(chat.size / (1024 * 1024 * 1024)).toFixed(2)} GB`
+                            : "",
+                          chat.count != null ? `• ${chat.count} msgs` : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
                   </p>
                 </div>
               ))

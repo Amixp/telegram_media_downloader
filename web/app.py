@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import uuid
-from queue import Empty, Queue
+from queue import Empty, PriorityQueue, Queue
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,9 +19,61 @@ logger = logging.getLogger("web_dashboard")
 RESOLVE_JOBS: Dict[str, Dict[str, Any]] = {}
 _RESOLVE_JOBS_LOCK = threading.Lock()
 _RESOLVER_QUEUE: Queue = Queue()  # ("username",...) | ("chat_id",...) | ("profile_photo",...) | ("full_profile", chat_id, result_holder)
+_RESOLVER_PRIORITY_QUEUE: PriorityQueue = PriorityQueue()
+_PROFILE_PHOTO_JOB_DATA: Dict[str, bytes] = {}
+_PROFILE_PHOTO_LOCK = threading.Lock()
 _PENDING_APPLY_QUEUE: Queue = Queue()  # Элементы: (job_id, chat_id, title, username) или (job_id, chat_id, title, None) для title-only
 _RESOLVER_THREAD: Optional[threading.Thread] = None
 _RESOLVER_LOOP: Optional[asyncio.AbstractEventLoop] = None
+_RESOLVER_JOB_DEADLINE_SEC = 5.0
+_RESOLVER_STATS: Dict[str, Any] = {
+    "total": 0,
+    "done": 0,
+    "error": 0,
+    "deadline_exceeded": 0,
+    "retries": 0,
+    "latency_ms_total": 0.0,
+}
+
+
+def _resolver_task_priority(task_type: str) -> int:
+    if task_type in {"username", "chat_id"}:
+        return 0
+    if task_type == "profile_photo_job":
+        return 1
+    return 2
+
+
+def _enqueue_resolver_task(item: Any) -> None:
+    task_type = str(item[0]) if item else ""
+    _RESOLVER_PRIORITY_QUEUE.put((_resolver_task_priority(task_type), time.monotonic(), item))
+
+
+def _create_resolve_job(meta: Dict[str, Any]) -> str:
+    job_id = str(uuid.uuid4())
+    now_ts = time.time()
+    with _RESOLVE_JOBS_LOCK:
+        RESOLVE_JOBS[job_id] = {
+            "status": "pending",
+            "stage": "queued",
+            "created_at": now_ts,
+            "deadline_at": now_ts + _RESOLVER_JOB_DEADLINE_SEC,
+            "retries": 0,
+            **meta,
+        }
+    return job_id
+
+
+def _record_resolver_latency(job_id: Optional[str]) -> None:
+    if not job_id:
+        return
+    with _RESOLVE_JOBS_LOCK:
+        job = RESOLVE_JOBS.get(job_id) or {}
+    created = job.get("created_at")
+    if not created:
+        return
+    latency_ms = max(0.0, (time.time() - float(created)) * 1000.0)
+    _RESOLVER_STATS["latency_ms_total"] = float(_RESOLVER_STATS.get("latency_ms_total", 0.0)) + latency_ms
 
 app = FastAPI(title="Telegram Media Downloader Dashboard")
 
@@ -322,16 +374,8 @@ async def get_stats():
                 chats_to_resolve.append(chat_id)
         # Запускаем резолв для всех найденных чатов (в фоне)
         for chat_id in chats_to_resolve[:10]:  # Ограничение: не более 10 за раз
-            job_id = str(uuid.uuid4())
-            with _RESOLVE_JOBS_LOCK:
-                RESOLVE_JOBS[job_id] = {
-                    "status": "pending",
-                    "chat_id": chat_id,
-                }
-            try:
-                _RESOLVER_QUEUE.put_nowait(("chat_id", job_id, chat_id))
-            except Exception:
-                pass  # Если очередь переполнена — пропускаем
+            job_id = _create_resolve_job({"chat_id": chat_id})
+            _enqueue_resolver_task(("chat_id", job_id, chat_id))
         return {"enabled": True, "connected": True, **data}
     except Exception as e:
         msg = str(e)
@@ -415,28 +459,33 @@ async def get_chat_info(chat_id: int):
     }
 
 
-@app.get("/api/chat/{chat_id}/profile-photo")
-async def get_chat_profile_photo(chat_id: int):
-    """Фото профиля/чата из Telegram (через резолвер, может занять несколько секунд)."""
-    result_holder = {"event": threading.Event(), "result": None, "error": None}
-    try:
-        _RESOLVER_QUEUE.put(("profile_photo", chat_id, result_holder))
-        if not result_holder["event"].wait(timeout=25):
-            return Response(status_code=504, content=b"")
-        if result_holder.get("error"):
-            return Response(status_code=404, content=b"")
-        data = result_holder.get("result")
-        if not data:
-            return Response(status_code=404, content=b"")
-        return Response(content=data, media_type="image/jpeg")
-    except Exception as e:
-        logger.exception("profile-photo %s: %s", chat_id, e)
-        return Response(status_code=500, content=b"")
+@app.post("/api/chat/{chat_id}/profile-photo/request")
+async def request_chat_profile_photo(chat_id: int):
+    """Создать фоновую задачу получения фото профиля чата."""
+    job_id = _create_resolve_job({"job_type": "profile_photo", "chat_id": chat_id})
+    _enqueue_resolver_task(("profile_photo_job", job_id, chat_id))
+    return {"job_id": job_id, "status": "pending"}
 
 
-@app.get("/api/chat/{chat_id}/full-info")
-async def get_chat_full_info(chat_id: int):
-    """Метаданные из БД + полный профиль из Telegram (about, участники, ссылка-приглашение и т.д.)."""
+@app.get("/api/chat/profile-photo/{job_id}")
+async def get_chat_profile_photo_by_job(job_id: str):
+    """Получить фото профиля по готовой задаче profile_photo."""
+    with _RESOLVE_JOBS_LOCK:
+        job = RESOLVE_JOBS.get(job_id)
+    if not job:
+        return Response(status_code=404, content=b"")
+    if job.get("status") != "done":
+        return Response(status_code=409, content=b"")
+    with _PROFILE_PHOTO_LOCK:
+        data = _PROFILE_PHOTO_JOB_DATA.get(job_id)
+    if not data:
+        return Response(status_code=404, content=b"")
+    return Response(content=data, media_type="image/jpeg")
+
+
+@app.post("/api/chat/{chat_id}/full-info/request")
+async def request_chat_full_info(chat_id: int):
+    """Создать фоновую задачу получения расширенной информации профиля чата."""
     from utils.config import ConfigManager
     config = ConfigManager().load()
     ch_config = config.get("clickhouse", {})
@@ -451,29 +500,9 @@ async def get_chat_full_info(chat_id: int):
             base["profile_link"] = meta.get("profile_link", "")
             base["username"] = meta.get("username", "")
 
-    result_holder = {"event": threading.Event(), "result": None, "error": None}
-    try:
-        _RESOLVER_QUEUE.put(("full_profile", chat_id, result_holder))
-        if not result_holder["event"].wait(timeout=25):
-            return {**base, "live_error": "timeout"}
-        if result_holder.get("error"):
-            return {**base, "live_error": result_holder["error"]}
-        live = result_holder.get("result") or {}
-        return {
-            **base,
-            "about": live.get("about") or base.get("description", ""),
-            "participants_count": live.get("participants_count"),
-            "admins_count": live.get("admins_count"),
-            "kicked_count": live.get("kicked_count"),
-            "banned_count": live.get("banned_count"),
-            "linked_chat_id": live.get("linked_chat_id"),
-            "invite_link": live.get("invite_link"),
-            "pinned_msg_id": live.get("pinned_msg_id"),
-            "online_count": live.get("online_count"),
-        }
-    except Exception as e:
-        logger.exception("full-info %s: %s", chat_id, e)
-        return {**base, "live_error": str(e)}
+    job_id = _create_resolve_job({"job_type": "full_profile", "chat_id": chat_id, **base})
+    _enqueue_resolver_task(("full_profile_job", job_id, chat_id, base))
+    return {"job_id": job_id, "status": "pending", "base": base}
 
 
 @app.get("/api/chats/by-username/{username}")
@@ -784,16 +813,74 @@ def _resolve_username_worker() -> None:
         if not await cl.is_user_authorized():
             await cl.disconnect()
             raise RuntimeError(
-                "Сессия резолвера (media_downloader_resolver) не авторизована. "
-                "Инструкция: docs/RESOLVER_SESSION.md"
+                "Основная сессия Telegram (media_downloader) не авторизована."
             )
+
+    def _has_active_downloads() -> bool:
+        """Есть ли сейчас активные загрузки файлов."""
+        try:
+            active = PROGRESS_STATE.get("active_downloads") or {}
+            return len(active) > 0
+        except Exception:
+            return False
+
+    def _is_sqlite_locked_error(exc: Exception) -> bool:
+        return "database is locked" in str(exc).lower()
+
+    def _is_username_not_found_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "no user has" in text
+            or "username is not in use" in text
+            or "username_not_occupied" in text
+        )
+
+    def _job_deadline_exceeded(job_id: Optional[str]) -> bool:
+        if not job_id:
+            return False
+        with _RESOLVE_JOBS_LOCK:
+            job = RESOLVE_JOBS.get(job_id) or {}
+        deadline_at = float(job.get("deadline_at") or 0.0)
+        return deadline_at > 0 and time.time() > deadline_at
+
+    def _set_job_stage(job_id: Optional[str], stage: str) -> None:
+        if not job_id:
+            return
+        with _RESOLVE_JOBS_LOCK:
+            job = RESOLVE_JOBS.get(job_id)
+            if not job:
+                return
+            job["stage"] = stage
+            if stage == "running" and not job.get("started_at"):
+                job["started_at"] = time.time()
+
+    def _set_deadline_exceeded(job_id: Optional[str], error_text: str = "Достигнут дедлайн 5 сек") -> None:
+        if not job_id:
+            return
+        with _RESOLVE_JOBS_LOCK:
+            job = RESOLVE_JOBS.get(job_id)
+            if not job:
+                return
+            job["status"] = "deadline_exceeded"
+            job["stage"] = "deadline_exceeded"
+            job["error"] = error_text
 
     while True:
         try:
-            item = _RESOLVER_QUEUE.get(timeout=2.0)
+            try:
+                _, _, item = _RESOLVER_PRIORITY_QUEUE.get(timeout=1.0)
+            except Empty:
+                item = _RESOLVER_QUEUE.get(timeout=1.0)
             if item is None:
                 break
             task_type = item[0]
+            job_id = item[1] if len(item) > 1 and isinstance(item[1], str) else None
+            if _job_deadline_exceeded(job_id):
+                _set_deadline_exceeded(job_id)
+                _RESOLVER_STATS["deadline_exceeded"] = int(_RESOLVER_STATS.get("deadline_exceeded", 0)) + 1
+                continue
+            _set_job_stage(job_id, "running")
+            _RESOLVER_STATS["total"] = int(_RESOLVER_STATS.get("total", 0)) + 1
             if task_type == "username":
                 job_id, _, username, title_from_request = item
                 username = (username or "").strip().lstrip("@")
@@ -825,7 +912,7 @@ def _resolve_username_worker() -> None:
                     proxy_config = get_proxy_config(config)
                     download_settings = config.get("download_settings") or {}
                     request_retries = download_settings.get("request_retries", 15)
-                    session_name = "media_downloader_resolver"
+                    session_name = "media_downloader"
                     client = TelegramClient(
                         session_name,
                         api_id=api_id,
@@ -850,20 +937,49 @@ def _resolve_username_worker() -> None:
                     with _RESOLVE_JOBS_LOCK:
                         RESOLVE_JOBS[job_id] = {
                             "status": "done",
+                            "stage": "done",
                             "chat_id": chat_id,
                             "title": title,
                             "username": username,
                         }
+                    _RESOLVER_STATS["done"] = int(_RESOLVER_STATS.get("done", 0)) + 1
+                    _record_resolver_latency(job_id)
                     _PENDING_APPLY_QUEUE.put((job_id, chat_id, title, username))
                 except Exception as e:
+                    if _is_sqlite_locked_error(e):
+                        if _job_deadline_exceeded(job_id):
+                            _set_deadline_exceeded(job_id)
+                            continue
+                        with _RESOLVE_JOBS_LOCK:
+                            if job_id in RESOLVE_JOBS:
+                                RESOLVE_JOBS[job_id]["stage"] = "retrying"
+                                RESOLVE_JOBS[job_id]["retries"] = int(RESOLVE_JOBS[job_id].get("retries") or 0) + 1
+                        _RESOLVER_STATS["retries"] = int(_RESOLVER_STATS.get("retries", 0)) + 1
+                        _enqueue_resolver_task(item)
+                        time.sleep(0.15)
+                        continue
+                    if _is_username_not_found_error(e):
+                        logger.warning("Резолв username %s: username не найден", username)
+                        with _RESOLVE_JOBS_LOCK:
+                            RESOLVE_JOBS[job_id] = {
+                                "status": "error",
+                                "stage": "error",
+                                "error": f"Username @{username} не найден",
+                                "username": username,
+                                "title": title_from_request or "",
+                            }
+                        _RESOLVER_STATS["error"] = int(_RESOLVER_STATS.get("error", 0)) + 1
+                        continue
                     logger.exception("Резолв username %s: %s", username, e)
                     with _RESOLVE_JOBS_LOCK:
                         RESOLVE_JOBS[job_id] = {
                             "status": "error",
+                            "stage": "error",
                             "error": str(e),
                             "username": username,
                             "title": title_from_request or "",
                         }
+                    _RESOLVER_STATS["error"] = int(_RESOLVER_STATS.get("error", 0)) + 1
                 finally:
                     if client:
                         try:
@@ -893,7 +1009,7 @@ def _resolve_username_worker() -> None:
                     proxy_config = get_proxy_config(config)
                     download_settings = config.get("download_settings") or {}
                     request_retries = download_settings.get("request_retries", 15)
-                    session_name = "media_downloader_resolver"
+                    session_name = "media_downloader"
                     client = TelegramClient(
                         session_name,
                         api_id=api_id,
@@ -919,19 +1035,36 @@ def _resolve_username_worker() -> None:
                     with _RESOLVE_JOBS_LOCK:
                         RESOLVE_JOBS[job_id] = {
                             "status": "done",
+                            "stage": "done",
                             "chat_id": chat_id,
                             "title": title,
                             "username": username or None,
                         }
+                    _RESOLVER_STATS["done"] = int(_RESOLVER_STATS.get("done", 0)) + 1
+                    _record_resolver_latency(job_id)
                     _PENDING_APPLY_QUEUE.put((job_id, chat_id, title, username or None))
                 except Exception as e:
+                    if _is_sqlite_locked_error(e):
+                        if _job_deadline_exceeded(job_id):
+                            _set_deadline_exceeded(job_id)
+                            continue
+                        with _RESOLVE_JOBS_LOCK:
+                            if job_id in RESOLVE_JOBS:
+                                RESOLVE_JOBS[job_id]["stage"] = "retrying"
+                                RESOLVE_JOBS[job_id]["retries"] = int(RESOLVE_JOBS[job_id].get("retries") or 0) + 1
+                        _RESOLVER_STATS["retries"] = int(_RESOLVER_STATS.get("retries", 0)) + 1
+                        _enqueue_resolver_task(item)
+                        time.sleep(0.15)
+                        continue
                     logger.exception("Резолв chat_id %s: %s", chat_id, e)
                     with _RESOLVE_JOBS_LOCK:
                         RESOLVE_JOBS[job_id] = {
                             "status": "error",
+                            "stage": "error",
                             "error": str(e),
                             "chat_id": chat_id,
                         }
+                    _RESOLVER_STATS["error"] = int(_RESOLVER_STATS.get("error", 0)) + 1
                 finally:
                     if client:
                         try:
@@ -939,6 +1072,232 @@ def _resolve_username_worker() -> None:
                             async def _disconnect():
                                 await client.disconnect()
 
+                            loop.run_until_complete(_disconnect())
+                        except Exception:
+                            pass
+            elif task_type == "profile_photo_job":
+                job_id, _, chat_id = item
+                client = None
+                try:
+                    from io import BytesIO
+                    cm = ConfigManager()
+                    config = cm.load()
+                    api_id = config.get("api_id")
+                    api_hash = config.get("api_hash")
+                    if not api_id or not api_hash:
+                        with _RESOLVE_JOBS_LOCK:
+                            RESOLVE_JOBS[job_id] = {
+                                "status": "error",
+                                "job_type": "profile_photo",
+                                "chat_id": chat_id,
+                                "error": "В конфиге не заданы api_id/api_hash",
+                            }
+                        continue
+                    proxy_config = get_proxy_config(config)
+                    download_settings = config.get("download_settings") or {}
+                    request_retries = download_settings.get("request_retries", 15)
+                    session_name = "media_downloader"
+                    client = TelegramClient(
+                        session_name,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                        proxy=proxy_config,
+                        device_model=DEVICE_MODEL,
+                        system_version=SYSTEM_VERSION,
+                        app_version=APP_VERSION,
+                        lang_code=LANG_CODE,
+                        request_retries=request_retries,
+                    )
+
+                    async def _get_profile_photo_job():
+                        await _resolver_ensure_authorized(client)
+                        entity = await client.get_entity(chat_id)
+                        buf = BytesIO()
+                        await client.download_profile_photo(entity, file=buf)
+                        return buf.getvalue()
+
+                    photo_bytes = loop.run_until_complete(_get_profile_photo_job())
+                    if photo_bytes:
+                        with _PROFILE_PHOTO_LOCK:
+                            _PROFILE_PHOTO_JOB_DATA[job_id] = photo_bytes
+                        with _RESOLVE_JOBS_LOCK:
+                            RESOLVE_JOBS[job_id] = {
+                                "status": "done",
+                                "stage": "done",
+                                "job_type": "profile_photo",
+                                "chat_id": chat_id,
+                            }
+                        _RESOLVER_STATS["done"] = int(_RESOLVER_STATS.get("done", 0)) + 1
+                        _record_resolver_latency(job_id)
+                    else:
+                        with _RESOLVE_JOBS_LOCK:
+                            RESOLVE_JOBS[job_id] = {
+                                "status": "error",
+                                "stage": "error",
+                                "job_type": "profile_photo",
+                                "chat_id": chat_id,
+                                "error": "Нет фото",
+                            }
+                        _RESOLVER_STATS["error"] = int(_RESOLVER_STATS.get("error", 0)) + 1
+                except Exception as e:
+                    if _is_sqlite_locked_error(e):
+                        if _job_deadline_exceeded(job_id):
+                            _set_deadline_exceeded(job_id)
+                            continue
+                        with _RESOLVE_JOBS_LOCK:
+                            if job_id in RESOLVE_JOBS:
+                                RESOLVE_JOBS[job_id]["stage"] = "retrying"
+                                RESOLVE_JOBS[job_id]["retries"] = int(RESOLVE_JOBS[job_id].get("retries") or 0) + 1
+                        _RESOLVER_STATS["retries"] = int(_RESOLVER_STATS.get("retries", 0)) + 1
+                        _enqueue_resolver_task(item)
+                        time.sleep(0.15)
+                        continue
+                    logger.exception("Резолв profile_photo_job chat_id %s: %s", chat_id, e)
+                    with _RESOLVE_JOBS_LOCK:
+                        RESOLVE_JOBS[job_id] = {
+                            "status": "error",
+                            "stage": "error",
+                            "job_type": "profile_photo",
+                            "chat_id": chat_id,
+                            "error": str(e),
+                        }
+                    _RESOLVER_STATS["error"] = int(_RESOLVER_STATS.get("error", 0)) + 1
+                finally:
+                    if client:
+                        try:
+                            async def _disconnect():
+                                await client.disconnect()
+                            loop.run_until_complete(_disconnect())
+                        except Exception:
+                            pass
+            elif task_type == "full_profile_job":
+                job_id, _, chat_id, base = item
+                client = None
+                try:
+                    from telethon.tl.types import Channel
+                    from telethon.tl.functions import channels, messages
+
+                    cm = ConfigManager()
+                    config = cm.load()
+                    api_id = config.get("api_id")
+                    api_hash = config.get("api_hash")
+                    if not api_id or not api_hash:
+                        with _RESOLVE_JOBS_LOCK:
+                            RESOLVE_JOBS[job_id] = {
+                                "status": "error",
+                                "job_type": "full_profile",
+                                "chat_id": chat_id,
+                                "error": "В конфиге не заданы api_id/api_hash",
+                                **(base or {}),
+                            }
+                        continue
+                    proxy_config = get_proxy_config(config)
+                    download_settings = config.get("download_settings") or {}
+                    request_retries = download_settings.get("request_retries", 15)
+                    session_name = "media_downloader"
+                    client = TelegramClient(
+                        session_name,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                        proxy=proxy_config,
+                        device_model=DEVICE_MODEL,
+                        system_version=SYSTEM_VERSION,
+                        app_version=APP_VERSION,
+                        lang_code=LANG_CODE,
+                        request_retries=request_retries,
+                    )
+
+                    async def _get_full_profile_job():
+                        await _resolver_ensure_authorized(client)
+                        entity = await client.get_entity(chat_id)
+                        out = {
+                            "about": "",
+                            "participants_count": None,
+                            "admins_count": None,
+                            "kicked_count": None,
+                            "banned_count": None,
+                            "linked_chat_id": None,
+                            "invite_link": None,
+                            "pinned_msg_id": None,
+                            "online_count": None,
+                        }
+                        from telethon.tl.types import Chat
+                        if isinstance(entity, Channel):
+                            full = await client(channels.GetFullChannelRequest(channel=entity))
+                            fc = full.full_chat
+                            out["about"] = (getattr(fc, "about", None) or "").strip()
+                            out["participants_count"] = getattr(fc, "participants_count", None)
+                            out["admins_count"] = getattr(fc, "admins_count", None)
+                            out["kicked_count"] = getattr(fc, "kicked_count", None)
+                            out["banned_count"] = getattr(fc, "banned_count", None)
+                            out["linked_chat_id"] = getattr(fc, "linked_chat_id", None)
+                            out["pinned_msg_id"] = getattr(fc, "pinned_msg_id", None)
+                            out["online_count"] = getattr(fc, "online_count", None)
+                            ei = getattr(fc, "exported_invite", None)
+                            if ei is not None and getattr(ei, "link", None):
+                                out["invite_link"] = (ei.link or "").strip()
+                        elif isinstance(entity, Chat):
+                            full = await client(messages.GetFullChatRequest(chat_id=entity.id))
+                            fc = full.full_chat
+                            out["about"] = (getattr(fc, "about", None) or "").strip()
+                            out["pinned_msg_id"] = getattr(fc, "pinned_msg_id", None)
+                            participants = getattr(fc, "participants", None)
+                            if participants is not None:
+                                out["participants_count"] = getattr(participants, "participants_count", None) or len(getattr(participants, "participants", []))
+                            ei = getattr(fc, "exported_invite", None)
+                            if ei is not None and getattr(ei, "link", None):
+                                out["invite_link"] = (ei.link or "").strip()
+                        return out
+
+                    live = loop.run_until_complete(_get_full_profile_job())
+                    with _RESOLVE_JOBS_LOCK:
+                        RESOLVE_JOBS[job_id] = {
+                            "status": "done",
+                            "stage": "done",
+                            "job_type": "full_profile",
+                            "chat_id": chat_id,
+                            **(base or {}),
+                            "about": live.get("about") or (base or {}).get("description", ""),
+                            "participants_count": live.get("participants_count"),
+                            "admins_count": live.get("admins_count"),
+                            "kicked_count": live.get("kicked_count"),
+                            "banned_count": live.get("banned_count"),
+                            "linked_chat_id": live.get("linked_chat_id"),
+                            "invite_link": live.get("invite_link"),
+                            "pinned_msg_id": live.get("pinned_msg_id"),
+                            "online_count": live.get("online_count"),
+                        }
+                    _RESOLVER_STATS["done"] = int(_RESOLVER_STATS.get("done", 0)) + 1
+                    _record_resolver_latency(job_id)
+                except Exception as e:
+                    if _is_sqlite_locked_error(e):
+                        if _job_deadline_exceeded(job_id):
+                            _set_deadline_exceeded(job_id)
+                            continue
+                        with _RESOLVE_JOBS_LOCK:
+                            if job_id in RESOLVE_JOBS:
+                                RESOLVE_JOBS[job_id]["stage"] = "retrying"
+                                RESOLVE_JOBS[job_id]["retries"] = int(RESOLVE_JOBS[job_id].get("retries") or 0) + 1
+                        _RESOLVER_STATS["retries"] = int(_RESOLVER_STATS.get("retries", 0)) + 1
+                        _enqueue_resolver_task(item)
+                        time.sleep(0.15)
+                        continue
+                    logger.exception("Резолв full_profile_job chat_id %s: %s", chat_id, e)
+                    with _RESOLVE_JOBS_LOCK:
+                        RESOLVE_JOBS[job_id] = {
+                            "status": "error",
+                            "stage": "error",
+                            "job_type": "full_profile",
+                            "chat_id": chat_id,
+                            "error": str(e),
+                            **(base or {}),
+                        }
+                    _RESOLVER_STATS["error"] = int(_RESOLVER_STATS.get("error", 0)) + 1
+                finally:
+                    if client:
+                        try:
+                            async def _disconnect():
+                                await client.disconnect()
                             loop.run_until_complete(_disconnect())
                         except Exception:
                             pass
@@ -958,7 +1317,7 @@ def _resolve_username_worker() -> None:
                     proxy_config = get_proxy_config(config)
                     download_settings = config.get("download_settings") or {}
                     request_retries = download_settings.get("request_retries", 15)
-                    session_name = "media_downloader_resolver"
+                    session_name = "media_downloader"
                     client = TelegramClient(
                         session_name,
                         api_id=api_id,
@@ -1014,7 +1373,7 @@ def _resolve_username_worker() -> None:
                     proxy_config = get_proxy_config(config)
                     download_settings = config.get("download_settings") or {}
                     request_retries = download_settings.get("request_retries", 15)
-                    session_name = "media_downloader_resolver"
+                    session_name = "media_downloader"
                     client = TelegramClient(
                         session_name,
                         api_id=api_id,
@@ -1152,25 +1511,22 @@ class ResolveRequest(BaseModel):
 async def resolve_username(body: ResolveRequest):
     """Запустить фоновый резолв username → chat_id или chat_id → title. Возвращает job_id для опроса статуса."""
     from fastapi import HTTPException
-    job_id = str(uuid.uuid4())
     if body.username:
         username = (body.username or "").strip().lstrip("@")
         if not username:
             raise HTTPException(status_code=400, detail="username обязателен")
-        with _RESOLVE_JOBS_LOCK:
-            RESOLVE_JOBS[job_id] = {
-                "status": "pending",
-                "username": username,
-                "title": body.title or f"@{username}",
-            }
-        _RESOLVER_QUEUE.put(("username", job_id, username, body.title or f"@{username}"))
+        job_id = _create_resolve_job({
+            "username": username,
+            "title": body.title or f"@{username}",
+            "job_type": "resolve_username",
+        })
+        _enqueue_resolver_task(("username", job_id, username, body.title or f"@{username}"))
     elif body.chat_id:
-        with _RESOLVE_JOBS_LOCK:
-            RESOLVE_JOBS[job_id] = {
-                "status": "pending",
-                "chat_id": body.chat_id,
-            }
-        _RESOLVER_QUEUE.put(("chat_id", job_id, body.chat_id))
+        job_id = _create_resolve_job({
+            "chat_id": body.chat_id,
+            "job_type": "resolve_chat_id",
+        })
+        _enqueue_resolver_task(("chat_id", job_id, body.chat_id))
     else:
         raise HTTPException(status_code=400, detail="Укажите username или chat_id")
     return {"job_id": job_id, "status": "pending"}
@@ -1185,6 +1541,31 @@ async def resolve_status(job_id: str):
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/api/chats/resolve-metrics")
+async def resolve_metrics():
+    """Метрики резолвера для SLA-мониторинга."""
+    with _RESOLVE_JOBS_LOCK:
+        jobs = list(RESOLVE_JOBS.values())
+    done_latencies_ms = []
+    counts = {"pending": 0, "done": 0, "error": 0, "deadline_exceeded": 0}
+    for job in jobs:
+        status = str(job.get("status") or "pending")
+        if status in counts:
+            counts[status] += 1
+        created = job.get("created_at")
+        started = job.get("started_at")
+        if status == "done" and created and started:
+            done_latencies_ms.append(max(0.0, (float(started) - float(created)) * 1000.0))
+    avg_latency_ms = (sum(done_latencies_ms) / len(done_latencies_ms)) if done_latencies_ms else 0.0
+    return {
+        "queue_depth": _RESOLVER_PRIORITY_QUEUE.qsize(),
+        "jobs_total": len(jobs),
+        "counts": counts,
+        "avg_schedule_latency_ms": round(avg_latency_ms, 2),
+        "worker_stats": _RESOLVER_STATS,
+    }
 
 
 @app.post("/api/chats/add")

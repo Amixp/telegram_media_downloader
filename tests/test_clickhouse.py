@@ -52,9 +52,7 @@ class TestClickHouseDB(unittest.TestCase):
         for msg in messages:
             loop.run_until_complete(db.save_message(msg))
 
-        # Verify flush was called because batch_size=2
-        mock_client.execute.assert_any_call(mock.ANY, mock.ANY)
-        # Check if INSERT was called
+        # Проверяем, что INSERT вызван (с optional settings kwargs)
         call_args = mock_client.execute.call_args_list
         insert_calls = [c for c in call_args if "INSERT INTO messages" in c[0][0]]
         self.assertTrue(len(insert_calls) > 0)

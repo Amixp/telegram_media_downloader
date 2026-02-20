@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Добавлена команда `make build-frontend` для сборки фронтенда
 
 ### Fixed
+- **Резолвер: priority-очередь, дедлайн 5 сек и retry-стадии**
+  - Добавлены `stage`/`deadline_at`/`retries` в job-статус резолвера и статус `deadline_exceeded`.
+  - Резолвер обрабатывает задачи через priority-очередь (`username/chat_id` приоритетнее профиля/фото).
+  - При `database is locked` задача переводится в `retrying` и повторно ставится в очередь с коротким backoff.
+- **Web UI: polling учитывает `deadline_exceeded` как терминальный статус**
+  - Окно pending/профиля корректно завершает ожидание задач при дедлайне.
+- **ClickHouse: быстрые асинхронные вставки без batch-flush**
+  - `save_message` перешёл на прямую вставку с `INSERT ... SETTINGS async_insert=1`.
+  - Для `messages/chats/file_downloads/app_logs` добавлены per-table insert settings.
+  - Буферный flush для логов/сообщений переведен в no-op (legacy compatibility).
+- **Резолвер username: корректная обработка несуществующего username**
+  - Ошибки вида `No user has "..." as username` / `USERNAME_NOT_OCCUPIED` теперь обрабатываются как штатный кейс без traceback-спама в логах.
+  - В статус задачи возвращается понятная ошибка: `Username @... не найден`.
+- **Резолвер: использует текущую сессию и не падает на блокировке SQLite**
+  - Задачи резолвера переведены на сессию `media_downloader` (текущая рабочая сессия загрузчика), без требования отдельной авторизации `media_downloader_resolver`.
+  - При `database is locked` задача не помечается ошибкой: возвращается в очередь и выполняется позже.
 - **Downloader: NameError в валидации медиа**
   - В `utils/validation.py` добавлен `logger = logging.getLogger(__name__)`, чтобы исключить падение на `name 'logger' is not defined` при проверке битых/неполных файлов.
 - **Веб-профиль чата: убрано блокирующее ожидание в API**

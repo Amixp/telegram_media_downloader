@@ -228,8 +228,20 @@ clickhouse:
   user: default
   password: ""
   database: telegram_downloader
-  # Размер пакета для вставки (сообщений)
+  # Legacy (больше не используется для буферизации сообщений; оставлено для совместимости)
   batch_size: 1000
+  # Быстрые асинхронные вставки ClickHouse
+  insert_settings:
+    default:
+      async_insert: 1
+      wait_for_async_insert: 0
+      async_insert_busy_timeout_ms: 200
+      async_insert_stale_timeout_ms: 2000
+      max_insert_threads: 4
+    tables:
+      # Для критичных метаданных можно ждать подтверждение вставки
+      chats:
+        wait_for_async_insert: 1
   # true: архив и статистика — из ClickHouse; проверка дублей и выгрузки — по CH.
   # При primary_source: true при старте проверяется доступ к БД; при ошибке БД отключается, работа продолжается без выхода.
   primary_source: false
