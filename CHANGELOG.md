@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Ссылки на скачанные файлы в папку из конфигурации (media_links_base)**
+  - В `download_settings` добавлен параметр `media_links_base`: если задан, в историю (JSONL/HTML) и в ClickHouse записываются пути к файлам относительно этой папки (тот же относительный хвост от `base_directory`). Файлы по-прежнему скачиваются в `base_directory`; ссылки в истории и веб-дашборде указывают на `media_links_base` (удобно после переноса медиа на другой диск или NAS).
+  - Утилита `utils.path_rewrite.to_display_path()` для подмены префикса пути; веб-приложение при проверке путей использует «effective base» — `media_links_base`, если задан, иначе `base_directory`.
+  - Скрипт `rewrite_media_links.py`: перезапись уже сохранённых ссылок в `chat_*.jsonl` и в таблицах ClickHouse `messages`/`file_downloads` (префикс `base_directory` → `media_links_base`). Опции: `--dry-run`, `--regenerate-html` для пересборки `chat_*.html` и `index.html` после перезаписи.
 - **Веб-дашборд: резолв username → chat_id и chat_id → title**
   - При клике по ссылке на чат по username без chat_id в архиве: запускается фоновый резолв через Telethon (отдельный поток, сессия `media_downloader`), открывается плейсхолдер «Ищем chat_id…», после завершения чат добавляется в ClickHouse и в список загрузок config, список чатов обновляется и выполняется переход на чат/сообщение.
   - Автоматический резолв title для чатов с дефолтным именем (`Chat {chat_id}`): при запросе `/api/stats` для таких чатов запускается фоновый резолв `chat_id → title` через Telethon, после завершения имя обновляется в ClickHouse (сохраняются текущие message_count и total_size).

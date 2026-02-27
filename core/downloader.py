@@ -37,6 +37,7 @@ from utils.log import configure_logging
 from utils.media_utils import get_media_type, sanitize_filename
 from utils.validation import validate_archive_file, validate_downloaded_media
 from utils.filter import MediaFilter
+from utils.path_rewrite import to_display_path
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,17 @@ class DownloadManager:
             True, если файл существует, иначе False.
         """
         return not os.path.isdir(file_path) and os.path.exists(file_path)
+
+    def _get_display_path(self, real_path: str) -> str:
+        """Путь для записи в историю/ClickHouse (под media_links_base, если задан)."""
+        ds = self.config.get("download_settings", {})
+        base = (ds.get("base_directory") or "").strip() or PROJECT_ROOT
+        media_base = (ds.get("media_links_base") or "").strip()
+        if not os.path.isabs(base):
+            base = os.path.abspath(base)
+        if media_base and not os.path.isabs(media_base):
+            media_base = os.path.abspath(media_base)
+        return to_display_path(real_path, base, media_base)
 
     def _find_file_in_archive(
         self,
@@ -767,7 +779,7 @@ class DownloadManager:
                                 "existing",
                                 chat_title=str(chat_title or ""),
                                 file_name=display_name,
-                                file_path=download_path,
+                                file_path=self._get_display_path(download_path),
                                 file_size=file_size or 0,
                                 file_hash=fhash,
                             )
@@ -1020,7 +1032,7 @@ class DownloadManager:
                                 "downloaded",
                                 chat_title=str(chat_title or ""),
                                 file_name=display_name,
-                                file_path=download_path,
+                                file_path=self._get_display_path(download_path),
                                 file_size=file_size or 0,
                                 file_hash=fhash,
                             )
@@ -1328,7 +1340,7 @@ class DownloadManager:
                     "date": message.date,
                     "text": message.message or "",
                     "media_type": get_media_type(message),
-                    "file_path": file_path,
+                    "file_path": self._get_display_path(file_path) if file_path else "",
                     "file_size": self._get_file_size(message),
                     "sender_id": message.sender_id or 0,
                     "chat_title": chat_title or "",
@@ -1355,7 +1367,7 @@ class DownloadManager:
         if self.history_manager is not None:
             chat_title = getattr(chat, "title", None) if chat else None
             downloaded_files = {
-                msg_id: path
+                msg_id: self._get_display_path(path)
                 for (cid, msg_id), path in self.downloaded_files.items()
                 if cid == _chat_id
             }

@@ -668,13 +668,19 @@ async def remove_chat_from_archive_api(chat_id: int):
 
 
 def _get_base_directory() -> str:
-    """Абсолютный путь base_directory из конфига."""
+    """Абсолютный путь для проверки файлов: media_links_base если задан, иначе base_directory."""
     from utils.config import ConfigManager
     config = ConfigManager().load()
-    base = (config.get("download_settings") or {}).get("base_directory") or ""
-    if not base or not base.strip():
+    ds = config.get("download_settings") or {}
+    media_base = (ds.get("media_links_base") or "").strip()
+    if media_base:
+        if not os.path.isabs(media_base):
+            config_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            return os.path.abspath(os.path.join(config_dir, media_base))
+        return os.path.abspath(media_base)
+    base = (ds.get("base_directory") or "").strip()
+    if not base:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    base = base.strip()
     if not os.path.isabs(base):
         config_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base = os.path.abspath(os.path.join(config_dir, base))

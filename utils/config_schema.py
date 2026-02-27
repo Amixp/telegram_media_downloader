@@ -14,6 +14,8 @@ class DownloadSettings(BaseModel):
     # Максимум id в очереди повторов (ids_to_retry); при превышении старые обрезаются
     max_ids_to_retry: Optional[int] = 500
     base_directory: str = ""
+    # Если не пусто — в историю и ClickHouse записываются пути под этой папкой (тот же относительный хвост от base_directory).
+    media_links_base: str = ""
     skip_duplicates: bool = True
     download_message_history: bool = False
     history_format: Literal["json", "txt", "html", "jsonl"] = "json"
