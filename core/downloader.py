@@ -45,6 +45,16 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+class _AsyncNullContext:
+    """Async context manager‑заглушка (no‑op) для условного semaphore."""
+
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *args):
+        return None
+
+
 class DownloadManager:
     """Класс для управления загрузкой медиа из Telegram."""
 
@@ -654,6 +664,7 @@ class DownloadManager:
         task_id: Optional[TaskID] = None,
         chat_id: Optional[int] = None,
         chat_title: Optional[str] = None,
+        semaphore: Optional[asyncio.Semaphore] = None,
     ) -> int:
         """
         Загрузить медиа в соответствии с типом медиа.
@@ -794,84 +805,54 @@ class DownloadManager:
                         )
                         return message.id
                     else:
-                        # Файл отсутствует или невалиден - скачиваем
-                        if self._is_exist(file_name):
-                            file_name = get_next_name(file_name)
+                        _sem_ctx = semaphore if semaphore else _AsyncNullContext()
+                        async with _sem_ctx:
+                            # Файл отсутствует или невалиден - скачиваем
+                            if self._is_exist(file_name):
+                                file_name = get_next_name(file_name)
 
-                        # Настройки докачки
-                        download_settings = self.config.get("download_settings", {})
-                        resumable = download_settings.get("resumable_downloads", True)
-                        cache_dir = download_settings.get("cache_directory", ".download_cache")
+                            # Настройки докачки
+                            download_settings = self.config.get("download_settings", {})
+                            resumable = download_settings.get("resumable_downloads", True)
+                            cache_dir = download_settings.get("cache_directory", ".download_cache")
 
-                        if resumable:
-                            # Создать директорию кэша если её нет
-                            if not os.path.isabs(cache_dir):
-                                cache_dir = os.path.join(PROJECT_ROOT, cache_dir)
-                            if not os.path.exists(cache_dir):
-                                os.makedirs(cache_dir, exist_ok=True)
+                            if resumable:
+                                # Создать директорию кэша если её нет
+                                if not os.path.isabs(cache_dir):
+                                    cache_dir = os.path.join(PROJECT_ROOT, cache_dir)
+                                if not os.path.exists(cache_dir):
+                                    os.makedirs(cache_dir, exist_ok=True)
 
-                            # Формируем имя временного файла (по ID сообщения и чата для уникальности)
-                            part_file = os.path.join(cache_dir, f"{chat_id}_{message.id}.part")
-                            current_size = os.path.getsize(part_file) if os.path.exists(part_file) else 0
+                                # Формируем имя временного файла (по ID сообщения и чата для уникальности)
+                                part_file = os.path.join(cache_dir, f"{chat_id}_{message.id}.part")
+                                current_size = os.path.getsize(part_file) if os.path.exists(part_file) else 0
 
-                            # Проверка: если вдруг файл на диске больше чем в ТГ (ошибка?), начинаем заново
-                            if current_size >= file_size and file_size > 0:
-                                if current_size > file_size:
-                                    logger.warning("Размер кэша (%s) больше размера файла (%s), сброс", current_size, file_size)
-                                    if os.path.exists(part_file):
-                                        os.remove(part_file)
-                                    current_size = 0
-                                else:
-                                    # Файл уже полностью скачан в кэше, но не переименован
-                                    logger.debug("Файл %s уже полностью в кэше", message.id)
+                                # Проверка: если вдруг файл на диске больше чем в ТГ (ошибка?), начинаем заново
+                                if current_size >= file_size and file_size > 0:
+                                    if current_size > file_size:
+                                        logger.warning("Размер кэша (%s) больше размера файла (%s), сброс", current_size, file_size)
+                                        if os.path.exists(part_file):
+                                            os.remove(part_file)
+                                        current_size = 0
+                                    else:
+                                        # Файл уже полностью скачан в кэше, но не переименован
+                                        logger.debug("Файл %s уже полностью в кэше", message.id)
 
-                            mode = "ab" if current_size > 0 else "wb"
-                            loop = asyncio.get_running_loop()
+                                mode = "ab" if current_size > 0 else "wb"
+                                loop = asyncio.get_running_loop()
 
-                            # Создать task непосредственно перед началом загрузки
-                            if progress and own_task_id is None:
-                                own_task_id = progress.add_task(desc, total=file_size, completed=current_size, visible=True)
+                                # Создать task непосредственно перед началом загрузки
+                                if progress and own_task_id is None:
+                                    own_task_id = progress.add_task(desc, total=file_size, completed=current_size, visible=True)
 
-                            if progress and own_task_id is not None:
-                                progress.update(own_task_id, description=desc, total=file_size, completed=current_size, visible=True)
-                                # Сразу показать текущий файл в веб-дашборде (даже если current_size=0)
-                                self._progress_callback(
-                                    current_size,
-                                    file_size,
-                                    progress=progress,
-                                    task_id=own_task_id,
-                                    web_task_id=web_task_id,
-                                    web_description=web_description,
-                                )
-                                with open(part_file, mode) as f:
-                                    async for chunk in self._iter_download_chunks(
-                                        client,
-                                        message.media,
-                                        current_size,
-                                        1024 * 1024,
-                                        message.id,
-                                    ):
-                                        await loop.run_in_executor(
-                                            None, (lambda c: lambda: f.write(c))(chunk)
-                                        )
-                                        current_size += len(chunk)
-                                        self._progress_callback(
-                                            current_size,
-                                            file_size,
-                                            progress=progress,
-                                            task_id=own_task_id,
-                                            web_task_id=web_task_id,
-                                            web_description=web_description,
-                                        )
-                            else:
-                                with tqdm(
-                                    total=file_size, unit="B", unit_scale=True, desc=desc, initial=current_size
-                                ) as pbar:
+                                if progress and own_task_id is not None:
+                                    progress.update(own_task_id, description=desc, total=file_size, completed=current_size, visible=True)
                                     # Сразу показать текущий файл в веб-дашборде (даже если current_size=0)
                                     self._progress_callback(
                                         current_size,
                                         file_size,
-                                        progress_bar=pbar,
+                                        progress=progress,
+                                        task_id=own_task_id,
                                         web_task_id=web_task_id,
                                         web_description=web_description,
                                     )
@@ -890,64 +871,71 @@ class DownloadManager:
                                             self._progress_callback(
                                                 current_size,
                                                 file_size,
-                                                progress_bar=pbar,
+                                                progress=progress,
+                                                task_id=own_task_id,
                                                 web_task_id=web_task_id,
                                                 web_description=web_description,
                                             )
+                                else:
+                                    with tqdm(
+                                        total=file_size, unit="B", unit_scale=True, desc=desc, initial=current_size
+                                    ) as pbar:
+                                        # Сразу показать текущий файл в веб-дашборде (даже если current_size=0)
+                                        self._progress_callback(
+                                            current_size,
+                                            file_size,
+                                            progress_bar=pbar,
+                                            web_task_id=web_task_id,
+                                            web_description=web_description,
+                                        )
+                                        with open(part_file, mode) as f:
+                                            async for chunk in self._iter_download_chunks(
+                                                client,
+                                                message.media,
+                                                current_size,
+                                                1024 * 1024,
+                                                message.id,
+                                            ):
+                                                await loop.run_in_executor(
+                                                    None, (lambda c: lambda: f.write(c))(chunk)
+                                                )
+                                                current_size += len(chunk)
+                                                self._progress_callback(
+                                                    current_size,
+                                                    file_size,
+                                                    progress_bar=pbar,
+                                                    web_task_id=web_task_id,
+                                                    web_description=web_description,
+                                                )
 
-                            # Переименовать после успешной загрузки (в пуле потоков, чтобы не блокировать event loop)
-                            await loop.run_in_executor(None, lambda: shutil.move(part_file, file_name))
-                            download_path = file_name
-                            # Telethon/iter_download может не дать последнего тика ровно в total — добиваем явно
-                            final_total = file_size if file_size > 0 else current_size
-                            if final_total > 0:
-                                self._progress_callback(
-                                    final_total,
-                                    final_total,
-                                    progress=progress if (progress and own_task_id is not None) else None,
-                                    task_id=own_task_id,
-                                    web_task_id=web_task_id,
-                                    web_description=web_description,
-                                )
-                        else:
-                            # Скачать файл без докачки
-                            # Создать task непосредственно перед началом загрузки
-                            if progress and own_task_id is None:
-                                own_task_id = progress.add_task(desc, total=file_size, completed=0, visible=True)
-
-                            if progress and own_task_id is not None:
-                                progress.update(own_task_id, description=desc, total=file_size, completed=0, visible=True)
-                                # Сразу показать текущий файл в веб-дашборде
-                                self._progress_callback(
-                                    0,
-                                    file_size,
-                                    progress=progress,
-                                    task_id=own_task_id,
-                                    web_task_id=web_task_id,
-                                    web_description=web_description,
-                                )
-                                download_path = await client.download_media(
-                                    message,
-                                    file=file_name,
-                                    progress_callback=lambda c, t: self._progress_callback(
-                                        c,
-                                        t,
-                                        progress=progress,
+                                # Переименовать после успешной загрузки (в пуле потоков, чтобы не блокировать event loop)
+                                await loop.run_in_executor(None, lambda: shutil.move(part_file, file_name))
+                                download_path = file_name
+                                # Telethon/iter_download может не дать последнего тика ровно в total — добиваем явно
+                                final_total = file_size if file_size > 0 else current_size
+                                if final_total > 0:
+                                    self._progress_callback(
+                                        final_total,
+                                        final_total,
+                                        progress=progress if (progress and own_task_id is not None) else None,
                                         task_id=own_task_id,
                                         web_task_id=web_task_id,
                                         web_description=web_description,
-                                    ),
-                                )
+                                    )
                             else:
-                                with tqdm(
-                                    total=file_size, unit="B", unit_scale=True, desc=desc
-                                ) as pbar:
-                                    # pylint: disable=cell-var-from-loop
+                                # Скачать файл без докачки
+                                # Создать task непосредственно перед началом загрузки
+                                if progress and own_task_id is None:
+                                    own_task_id = progress.add_task(desc, total=file_size, completed=0, visible=True)
+
+                                if progress and own_task_id is not None:
+                                    progress.update(own_task_id, description=desc, total=file_size, completed=0, visible=True)
                                     # Сразу показать текущий файл в веб-дашборде
                                     self._progress_callback(
                                         0,
                                         file_size,
-                                        progress_bar=pbar,
+                                        progress=progress,
+                                        task_id=own_task_id,
                                         web_task_id=web_task_id,
                                         web_description=web_description,
                                     )
@@ -957,85 +945,110 @@ class DownloadManager:
                                         progress_callback=lambda c, t: self._progress_callback(
                                             c,
                                             t,
-                                            progress_bar=pbar,
+                                            progress=progress,
+                                            task_id=own_task_id,
                                             web_task_id=web_task_id,
                                             web_description=web_description,
                                         ),
                                     )
+                                else:
+                                    with tqdm(
+                                        total=file_size, unit="B", unit_scale=True, desc=desc
+                                    ) as pbar:
+                                        # pylint: disable=cell-var-from-loop
+                                        # Сразу показать текущий файл в веб-дашборде
+                                        self._progress_callback(
+                                            0,
+                                            file_size,
+                                            progress_bar=pbar,
+                                            web_task_id=web_task_id,
+                                            web_description=web_description,
+                                        )
+                                        download_path = await client.download_media(
+                                            message,
+                                            file=file_name,
+                                            progress_callback=lambda c, t: self._progress_callback(
+                                                c,
+                                                t,
+                                                progress_bar=pbar,
+                                                web_task_id=web_task_id,
+                                                web_description=web_description,
+                                            ),
+                                        )
 
-                    # Telethon не всегда вызывает callback на 100% — добиваем явно при успешной загрузке
-                    if download_path:
-                        try:
-                            final_total = file_size if file_size > 0 else os.path.getsize(download_path)
-                        except Exception:
-                            final_total = file_size
-                        if final_total and final_total > 0:
-                            self._progress_callback(
-                                final_total,
-                                final_total,
-                                progress=progress if (progress and own_task_id is not None) else None,
-                                task_id=own_task_id,
-                                web_task_id=web_task_id,
-                                web_description=web_description,
-                            )
-
-                    # Всегда проверять дубликаты после загрузки (если включено) — в пуле потоков (чтение/хеш файла)
-                    if download_path and skip_duplicates:
-                        _loop = asyncio.get_running_loop()
-                        download_path = await _loop.run_in_executor(
-                            None,
-                            lambda p=download_path: manage_duplicate_file(p, enabled=True),
-                        )
-
-                    if download_path:
-
-                        validate_downloads = self.config.get("download_settings", {}).get(
-                            "validate_downloads", True
-                        )
-                        # Валидировать медиафайл после загрузки (если включено). Пропуск, если файл взят как существующий — уже проверен в _check_existing_file
-                        if validate_downloads and not skipped_as_existing:
-                            # Блокирующая валидация в пуле потоков
-                            loop = asyncio.get_running_loop()
-                            is_valid = await loop.run_in_executor(
-                                None,
-                                lambda: validate_downloaded_media(download_path, message)
-                            )
-
-                            if not is_valid:
-                                logger.error(
-                                    self.i18n.t("validation_failed_media", id=message.id, path=download_path)
-                                )
-                                if os.path.exists(download_path):
-                                    await loop.run_in_executor(
-                                        None, lambda p=download_path: os.remove(p)
-                                    )
-                                self._record_failed(chat_id, message, "validation_failed", chat_title=chat_title or "")
-                                break
-
-                            # Распаковка если это архив (теперь async)
-                            await self.archive_handler.extract_if_archive(download_path)
-
-                        logger.info(self.i18n.t("downloaded", path=download_path))
-                        logger.debug("Успешно загружено сообщение %s", message.id)
-                        self.downloaded_files[(chat_id, message.id)] = download_path
-                        self.downloaded_ids.append((chat_id, message.id))
-                        if self.clickhouse_db.enabled:
-                            fhash = ""
+                        # Telethon не всегда вызывает callback на 100% — добиваем явно при успешной загрузке
+                        if download_path:
                             try:
-                                if download_path and os.path.isfile(download_path):
-                                    fhash = get_file_hash(download_path)
-                            except (OSError, IOError):
-                                pass
-                            self.clickhouse_db.save_file_download(
-                                chat_id,
-                                message.id,
-                                "downloaded",
-                                chat_title=str(chat_title or ""),
-                                file_name=display_name,
-                                file_path=self._get_display_path(download_path),
-                                file_size=file_size or 0,
-                                file_hash=fhash,
+                                final_total = file_size if file_size > 0 else os.path.getsize(download_path)
+                            except Exception:
+                                final_total = file_size
+                            if final_total and final_total > 0:
+                                self._progress_callback(
+                                    final_total,
+                                    final_total,
+                                    progress=progress if (progress and own_task_id is not None) else None,
+                                    task_id=own_task_id,
+                                    web_task_id=web_task_id,
+                                    web_description=web_description,
+                                )
+
+                        # Всегда проверять дубликаты после загрузки (если включено) — в пуле потоков (чтение/хеш файла)
+                        if download_path and skip_duplicates:
+                            _loop = asyncio.get_running_loop()
+                            download_path = await _loop.run_in_executor(
+                                None,
+                                lambda p=download_path: manage_duplicate_file(p, enabled=True),
                             )
+
+                        if download_path:
+
+                            validate_downloads = self.config.get("download_settings", {}).get(
+                                "validate_downloads", True
+                            )
+                            # Валидировать медиафайл после загрузки (если включено). Пропуск, если файл взят как существующий — уже проверен в _check_existing_file
+                            if validate_downloads and not skipped_as_existing:
+                                # Блокирующая валидация в пуле потоков
+                                loop = asyncio.get_running_loop()
+                                is_valid = await loop.run_in_executor(
+                                    None,
+                                    lambda: validate_downloaded_media(download_path, message)
+                                )
+
+                                if not is_valid:
+                                    logger.error(
+                                        self.i18n.t("validation_failed_media", id=message.id, path=download_path)
+                                    )
+                                    if os.path.exists(download_path):
+                                        await loop.run_in_executor(
+                                            None, lambda p=download_path: os.remove(p)
+                                        )
+                                    self._record_failed(chat_id, message, "validation_failed", chat_title=chat_title or "")
+                                    break
+
+                                # Распаковка если это архив (теперь async)
+                                await self.archive_handler.extract_if_archive(download_path)
+
+                            logger.info(self.i18n.t("downloaded", path=download_path))
+                            logger.debug("Успешно загружено сообщение %s", message.id)
+                            self.downloaded_files[(chat_id, message.id)] = download_path
+                            self.downloaded_ids.append((chat_id, message.id))
+                            if self.clickhouse_db.enabled:
+                                fhash = ""
+                                try:
+                                    if download_path and os.path.isfile(download_path):
+                                        fhash = get_file_hash(download_path)
+                                except (OSError, IOError):
+                                    pass
+                                self.clickhouse_db.save_file_download(
+                                    chat_id,
+                                    message.id,
+                                    "downloaded",
+                                    chat_title=str(chat_title or ""),
+                                    file_name=display_name,
+                                    file_path=self._get_display_path(download_path),
+                                    file_size=file_size or 0,
+                                    file_hash=fhash,
+                                )
 
                         # Скрыть task после завершения загрузки
                         if progress and own_task_id is not None:
@@ -1276,17 +1289,11 @@ class DownloadManager:
             Максимальное значение из списка ID сообщений.
         """
         async def download_with_semaphore(message):
-            if semaphore:
-                async with semaphore:
-                    return await self.download_media(
-                        client, message, media_types, file_formats, download_directory,
-                        progress=progress, task_id=task_id, chat_id=chat_id, chat_title=chat_title
-                    )
-            else:
-                return await self.download_media(
-                    client, message, media_types, file_formats, download_directory,
-                    progress=progress, task_id=task_id, chat_id=chat_id, chat_title=chat_title
-                )
+            return await self.download_media(
+                client, message, media_types, file_formats, download_directory,
+                progress=progress, task_id=task_id, chat_id=chat_id, chat_title=chat_title,
+                semaphore=semaphore,
+            )
 
         message_ids = await asyncio.gather(
             *[download_with_semaphore(message) for message in messages]
